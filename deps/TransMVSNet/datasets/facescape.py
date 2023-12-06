@@ -25,7 +25,7 @@ class MVSDataset(Dataset):
         self.mode = mode
         self.stage = self.mode
         self.nviews = nviews
-        assert nviews == 4
+        #assert nviews == 4
         self.ndepths = ndepths
         self.kwargs = kwargs
         self.range_hor = 45
@@ -64,16 +64,17 @@ class MVSDataset(Dataset):
         old_ref_ids = ""
         sample_idx = 0
         for meta in diner_metas:
-            if meta["scan_path"] != old_scan_path or str(meta["ref_ids"]) != old_ref_ids:
+            meta_ref_ids = meta["ref_ids"][1:3]
+            if meta["scan_path"] != old_scan_path or str(meta_ref_ids) != old_ref_ids:
                 old_scan_path = meta["scan_path"]
-                old_ref_ids = str(meta["ref_ids"])
-                assert self.nviews == len(meta["ref_ids"])
+                old_ref_ids = str(meta_ref_ids)
+                assert self.nviews == len(meta_ref_ids)
                 for i in range(self.nviews):
-                    ref_ids = [r[:1] for r in meta["ref_ids"][:i]] + \
-                              [r[:1] for r in meta["ref_ids"][i + 1:]]
+                    ref_ids = [r[:1] for r in meta_ref_ids[:i]] + \
+                              [r[:1] for r in meta_ref_ids[i + 1:]]
                     sample_meta = dict(idx=sample_idx,
                                        scan_path=meta["scan_path"],
-                                       target_ids=meta["ref_ids"][i][:1],  # (noptions,)
+                                       target_ids=meta_ref_ids[i][:1],  # (noptions,)
                                        ref_ids=ref_ids)  # (n_views-1, noptions)
                     metas.append(sample_meta)
                     sample_idx += 1
@@ -140,7 +141,7 @@ class MVSDataset(Dataset):
 
         for i, vid in enumerate(view_ids):
             view_path = scan_path / self.int_2_viewname(int(vid))
-            img_path = view_path / "rgba_colorcalib.png"
+            img_path = view_path / "rgba_colorcalib_v2.png"
 
             img, mask = self.read_img(img_path)
 

@@ -9,6 +9,7 @@ sys.path.append(str(Path(__file__).parents[1]))
 from src.data.pl_datamodule import PlDataModule
 from pytorch_lightning import Trainer
 from src.models.diner import DINER
+from src.models.keypointnerf import KeypointNeRFLightningModule
 from pytorch_lightning.loggers.tensorboard import TensorBoardLogger
 import os
 from src.util.general import copy_python_files
@@ -21,10 +22,17 @@ def main():
     os.makedirs(conf.logger.kwargs.save_dir, exist_ok=True)
     datamodule = PlDataModule(conf.data.train, conf.data.val)
     datamodule.setup()
+    
+    model_name = sys.argv[2]
 
     # initialize model
-    diner = DINER(nerf_conf=conf.nerf, renderer_conf=conf.renderer, znear=datamodule.train_set.znear,
-                          zfar=datamodule.train_set.zfar, **conf.optimizer.kwargs)
+    if model_name == 'DINER':
+        model = DINER(nerf_conf=conf.nerf, renderer_conf=conf.renderer, znear=datamodule.train_set.znear,
+                              zfar=datamodule.train_set.zfar, **conf.optimizer.kwargs)
+    elif model_name == 'KeypointNeRF':
+        model = KeypointNeRFLightningModule(conf)
+    else:
+        raise ValueError(f'Model Name should be DINER or KeypointNeRF but got: {model_name}')
 
     # initialize logger
     logger = TensorBoardLogger(**conf.logger.kwargs, name=None)
@@ -44,7 +52,7 @@ def main():
     # initialize trainer
     trainer = Trainer(logger=logger, **conf.trainer.kwargs, callbacks=[checkpoint_callback, progress_bar])
 
-    trainer.fit(diner, datamodule=datamodule, ckpt_path=conf.trainer.get("ckpt_path", None))
+    trainer.fit(model, datamodule=datamodule, ckpt_path=conf.trainer.get("ckpt_path", None))
 
 
 if __name__ == "__main__":

@@ -39,7 +39,7 @@ class FacescapeDataSet(torch.utils.data.Dataset):
         self.DEPTH_FNAME = depth_fname if depth_fname is not None else self.DEPTH_FNAME
         self.range_hor = range_hor
         self.range_vert = range_vert
-        self.nsource = 4
+        self.nsource = 2
         self.slide_range = slide_range
         self.slide_step = slide_step
         self.random_ref_views = random_ref_views
