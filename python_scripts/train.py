@@ -18,24 +18,25 @@ from pytorch_lightning.callbacks.progress import TQDMProgressBar
 
 def main():
     config_path = sys.argv[1]
-    conf = OmegaConf.load(config_path)
-    os.makedirs(conf.logger.kwargs.save_dir, exist_ok=True)
-    datamodule = PlDataModule(conf.data.train, conf.data.val)
-    datamodule.setup()
-    
     model_name = sys.argv[2]
+    if model_name not in ['DINER', 'KeypointNeRF']:
+        raise ValueError(f'Model Name should be DINER or KeypointNeRF but got: {model_name}')
+    
+    conf = OmegaConf.load(config_path)
+    conf_logger = conf.logger_diner if model_name == 'DINER' else conf.logger_keypointnerf
+    os.makedirs(conf_logger.kwargs.save_dir, exist_ok=True)
+    datamodule = PlDataModule(conf.data.train, conf.data.val, model_name)
+    datamodule.setup()
 
     # initialize model
     if model_name == 'DINER':
         model = DINER(nerf_conf=conf.nerf, renderer_conf=conf.renderer, znear=datamodule.train_set.znear,
-                              zfar=datamodule.train_set.zfar, **conf.optimizer.kwargs)
-    elif model_name == 'KeypointNeRF':
-        model = KeypointNeRFLightningModule(conf)
+                              zfar=datamodule.train_set.zfar, **conf.optimizer_diner.kwargs)
     else:
-        raise ValueError(f'Model Name should be DINER or KeypointNeRF but got: {model_name}')
+        model = KeypointNeRFLightningModule(conf.keypoint_nerf, **conf.optimizer_keypointnerf.kwargs)
 
     # initialize logger
-    logger = TensorBoardLogger(**conf.logger.kwargs, name=None)
+    logger = TensorBoardLogger(**conf_logger.kwargs, name=None)
 
     # save configuration
     os.makedirs(logger.log_dir, exist_ok=True)

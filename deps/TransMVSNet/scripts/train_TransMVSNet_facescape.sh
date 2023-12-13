@@ -5,7 +5,7 @@
 #SBATCH -J train_TransMVSNet
 #SBATCH -o out_train_TransMVSNet.out
 #SBATCH -e err_train_TransMVSNet.err
-#SBATCH -t 00-24
+#SBATCH -t 04-24
 #SBATCH --gpus=rtx_3090:1
 
 MVS_TRAINING="/cluster/scratch/tguillou/facescape_color_calibrated"          # path to dataset mvs_training

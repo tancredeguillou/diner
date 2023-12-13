@@ -20,67 +20,66 @@ import pytorch_lightning
 from kornia.utils import tensor_to_image
 from pytorch_lightning.utilities.apply_func import move_data_to_device
 
-from src.util import keypointnerf_util
+from src.util.keypointnerf_util import *
 #from . import zju_evaluator
 from .spatial_encoder import SpatialEncoder
 #from .zju_dataset import ZJUDataset
 
 class KeypointNeRFLightningModule(pytorch_lightning.LightningModule):
-    def __init__(self, cfg):
+    def __init__(self, keypointnerf_conf, lr=5e-4):
         super().__init__()
-        self.cfg = copy.deepcopy(cfg)
+        self.cfg = copy.deepcopy(keypointnerf_conf)
+        self.lr = lr
         self.idx = 0
-        self.expname = cfg['expname']
-        self.save_dir = f'{cfg["out_dir"]}/{cfg["expname"]}'
+        #self.save_dir = f'{cfg["out_dir"]}/{cfg["expname"]}'
         self.save_hyperparameters()
-        self.dataset = ZJUDataset
         self.video_dirname = 'video3'
         self.images_dirname = 'images'
         self.test_dst_name = 'v3'
 
         self.model = KeypointNeRF(self.cfg)
         self.znear, self.zfar = 2.0, 5.0
-        self.zju_evaluator = zju_evaluator.ZJUEvaluator()
+        # self.zju_evaluator = zju_evaluator.ZJUEvaluator()
 
     def configure_optimizers(self):
-        return torch.optim.Adam(self.model.parameters(), lr=self.cfg['training'].get('lr', 1e-5))
+        return torch.optim.Adam(self.model.parameters(), lr=self.lr)
 
     @classmethod
     def from_config(cls, cfg, cfg_model):
         return cls(cfg, cfg_model)
 
-    def train_dataloader(self, batch_size=None):
-        train_dataset = self.dataset.from_config(self.cfg['dataset'], 'train', self.cfg)
-        return torch.utils.data.DataLoader(
-            train_dataset,
-            shuffle=True,
-            num_workers=self.cfg['training'].get('train_num_workers', 0),
-            batch_size=self.cfg['training'].get('train_batch_size', 1) if batch_size is None else batch_size,
-            collate_fn=self.collate_fn,
-            pin_memory=True,
-        )
+#     def train_dataloader(self, batch_size=None):
+#         train_dataset = self.dataset.from_config(self.cfg['dataset'], 'train', self.cfg)
+#         return torch.utils.data.DataLoader(
+#             train_dataset,
+#             shuffle=True,
+#             num_workers=self.cfg['training'].get('train_num_workers', 0),
+#             batch_size=self.cfg['training'].get('train_batch_size', 1) if batch_size is None else batch_size,
+#             collate_fn=self.collate_fn,
+#             pin_memory=True,
+#         )
 
-    def val_dataloader(self, batch_size=None):
-        val_dataset = self.dataset.from_config(self.cfg['dataset'], 'val', self.cfg)
-        return torch.utils.data.DataLoader(
-            val_dataset,
-            shuffle=False,
-            num_workers=self.cfg['training'].get('val_num_workers', 0),
-            batch_size=self.cfg['training'].get('val_batch_size', 1) if batch_size is None else batch_size,
-            collate_fn=self.collate_fn,
-            pin_memory=True,
-        )
+#     def val_dataloader(self, batch_size=None):
+#         val_dataset = self.dataset.from_config(self.cfg['dataset'], 'val', self.cfg)
+#         return torch.utils.data.DataLoader(
+#             val_dataset,
+#             shuffle=False,
+#             num_workers=self.cfg['training'].get('val_num_workers', 0),
+#             batch_size=self.cfg['training'].get('val_batch_size', 1) if batch_size is None else batch_size,
+#             collate_fn=self.collate_fn,
+#             pin_memory=True,
+#         )
 
-    def test_dataloader(self, batch_size=None):
-        test_dataset = self.dataset.from_config(self.cfg['dataset'], 'test', self.cfg)
-        return torch.utils.data.DataLoader(
-            test_dataset,
-            shuffle=False,
-            num_workers=self.cfg['training'].get('val_num_workers', 0),
-            batch_size=self.cfg['training'].get('val_batch_size', 1) if batch_size is None else batch_size,
-            collate_fn=self.collate_fn,
-            pin_memory=True,
-        )
+#     def test_dataloader(self, batch_size=None):
+#         test_dataset = self.dataset.from_config(self.cfg['dataset'], 'test', self.cfg)
+#         return torch.utils.data.DataLoader(
+#             test_dataset,
+#             shuffle=False,
+#             num_workers=self.cfg['training'].get('val_num_workers', 0),
+#             batch_size=self.cfg['training'].get('val_batch_size', 1) if batch_size is None else batch_size,
+#             collate_fn=self.collate_fn,
+#             pin_memory=True,
+#         )
 
     def save_ckpt(self, **kwargs):
         pass
@@ -306,16 +305,12 @@ class KeypointNeRFLightningModule(pytorch_lightning.LightningModule):
             print(path)
 
     def decode_batch(self, batch, use_dr=False):
-        img_mask = batch['images_masks'].float()
-        img = batch["images"].float()
+        img = batch["target_rgb"].float()
 
-        tar_img_mask = batch['images_masks'][:, 0]
-        src_img_mask = batch['images_masks'][:, 1:]
-        # src_img_mask_dial = batch['images_masks_dial'][:, 1:]
         use_dr = True
 
-        Rt = batch['Rt']
-        K = batch['K']
+        Rt = batch["target_extrinsics"] # batch['Rt']
+        K = batch["target_intrinsics"] # batch['K']
 
         n_batch = Rt.shape[0]
         n_views = 1
@@ -331,7 +326,6 @@ class KeypointNeRFLightningModule(pytorch_lightning.LightningModule):
             Rt = Rt.view(-1, *Rt.shape[2:])
             K = K.view(-1, *K.shape[2:])
             img = img.view(-1, *img.shape[2:])
-            img_mask = img_mask.view(-1, *img_mask.shape[2:])
         extrin = torch.eye(4, device=self.device)[None].repeat(n_batch * n_views, 1, 1)
         extrin[:, :3, :4] = Rt
 
@@ -349,7 +343,7 @@ class KeypointNeRFLightningModule(pytorch_lightning.LightningModule):
 
         sp_data = {"extrin": extrin}
 
-        kpt3d = batch["kpt3d"]
+        kpt3d = batch["target_kpt3d"]
         if kpt3d is not None:
             sp_data["kpt3d"] = kpt3d
 
@@ -381,17 +375,16 @@ class KeypointNeRFLightningModule(pytorch_lightning.LightningModule):
                 'hT': hT,
                 "img": img,
                 "cam": cam,
-                "mask_at_box": batch['mask_at_box'],
-                "bounds": batch["bounds"],
+                #"mask_at_box": batch['mask_at_box'],
+                #"bounds": batch["bounds"],
             }
             dr_data["sp_data"] = sp_data
-            dr_data["objcenter"] = kpt3d[:, 0, :]  # select pelvis
+            dr_data["objcenter"] = kpt3d[:, 30, :]  # TODO select tip of the nose (in 300W it's the point 30)
             # if hT is not None:
             #     dr_data["objcenter"] = hT[:, :3, 3:]
             # dr_data["id_vec"] = batch.get("id_vec", None)
             dr_data["bg"] = bkg if "bkg" in batch else None
             dr_data["camcenter"] = batch.get("camcenter", None)
-            dr_data['msk'] = tar_img_mask
             # if "transf2d" in batch:
             #     dr_data["transf"] = dr_transf
 
@@ -405,10 +398,7 @@ class KeypointNeRFLightningModule(pytorch_lightning.LightningModule):
             'sp_data': sp_data,
             'invhT': invhT,
             'dr_data': dr_data,
-            'tar_img_mask': tar_img_mask,
-            # 'src_foreground_mask': src_img_mask_dial,
-            'src_foreground_mask': src_img_mask,
-            "bounds": batch["bounds"],
+            #"bounds": batch["bounds"],
         }
         return params
 
@@ -524,30 +514,30 @@ class KeypointNeRFLightningModule(pytorch_lightning.LightningModule):
 
         return log
 
-    def test_step(self, batch, batch_nb):
-        self.zju_evaluator.result_dir = os.path.join(
-            self.save_dir,
-            f'{self.images_dirname}_{self.test_dst_name}')
+#     def test_step(self, batch, batch_nb):
+#         self.zju_evaluator.result_dir = os.path.join(
+#             self.save_dir,
+#             f'{self.images_dirname}_{self.test_dst_name}')
 
-        tr_batch = self.decode_batch(batch)
-        nerf_level = max(0, int(math.log(tr_batch['im'].shape[-2], 2)) - 5)
-        out_nerf = self.render_full_nerf_image(tr_batch, nerf_level)
-        rendered_image = out_nerf["tex_fg_fine"].clamp(min=0.0, max=1.0)  # 3, H, W
-        human_idx = str(batch['human_idx'].item())
-        frame_index = str(batch['frame_index'].item())
-        view_index = str(batch['cam_ind'].item())
-        # print('Processing:', human_idx, frame_index, view_index)
-        scores = self.zju_evaluator.compute_score(
-            rendered_image,
-            tr_batch['dr_data']['tar'],
-            input_imgs=tr_batch['im'],
-            mask_at_box=tr_batch['dr_data']['mask_at_box'],
-            human_idx=human_idx,
-            frame_index=frame_index,
-            view_index=view_index
-        )
-        scores = {key: torch.tensor(val) for key, val in scores.items()}
-        return scores
+#         tr_batch = self.decode_batch(batch)
+#         nerf_level = max(0, int(math.log(tr_batch['im'].shape[-2], 2)) - 5)
+#         out_nerf = self.render_full_nerf_image(tr_batch, nerf_level)
+#         rendered_image = out_nerf["tex_fg_fine"].clamp(min=0.0, max=1.0)  # 3, H, W
+#         human_idx = str(batch['human_idx'].item())
+#         frame_index = str(batch['frame_index'].item())
+#         view_index = str(batch['cam_ind'].item())
+#         # print('Processing:', human_idx, frame_index, view_index)
+#         scores = self.zju_evaluator.compute_score(
+#             rendered_image,
+#             tr_batch['dr_data']['tar'],
+#             input_imgs=tr_batch['im'],
+#             mask_at_box=tr_batch['dr_data']['mask_at_box'],
+#             human_idx=human_idx,
+#             frame_index=frame_index,
+#             view_index=view_index
+#         )
+#         scores = {key: torch.tensor(val) for key, val in scores.items()}
+#         return scores
 
     def validation_epoch_end(self, outputs):
         for key in outputs[0].keys():
@@ -558,7 +548,7 @@ class KeypointNeRF(torch.nn.Module):
     def __init__(self, cfg):
         super().__init__()
 
-        model_cfg = cfg['models']['KeypointNeRF']
+        model_cfg = cfg
         self.train_out_h = model_cfg.get('train_out_h', 64)
         self.train_out_w = model_cfg.get('train_out_w', 64)
         mlp_geo, mlp_tex, sp_encoder_postfusion = None, None, None

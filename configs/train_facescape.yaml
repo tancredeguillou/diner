@@ -1,4 +1,4 @@
-logger:
+logger_diner:
   kwargs:
     save_dir: "outputs/facescape/own_trainings"
     version: "DINER_own_training"
@@ -12,12 +12,13 @@ data:
         range_vert: 30
         range_hor: 45
         slide_range: 40
+        slide_step: 20
         depth_fname: depth_TransMVSNet.png
     dataloader:
       kwargs:
         shuffle: true
         batch_size: 2
-        num_workers: 2
+        num_workers: 4
 
   val:
     dataset:
@@ -32,7 +33,7 @@ data:
       kwargs:
         shuffle: false
         batch_size: 2
-        num_workers: 2
+        num_workers: 4
 
 nerf:
   module: src.models.pixelnerf.PixelNeRF
@@ -63,7 +64,7 @@ renderer:
     n_gaussian: 15
 
 
-optimizer:
+optimizer_diner:
   kwargs:
     w_vgg: 0.1
     w_antibias: 5.
@@ -75,7 +76,9 @@ trainer:
   # ckpt_path:
   kwargs:
     enable_checkpointing: True
-    gpus:
+    accelerator: gpu # delete if gpus
+    #  gpus:
+    devices:
       - 0
     val_check_interval: 30000
     log_every_n_steps: 1000
@@ -92,7 +95,16 @@ checkpointing:
 
 ### KeypointNeRF ###
 
-KeypointNeRF:
+optimizer_keypointnerf:
+  kwargs:
+    lr: 5e-4
+
+logger_keypointnerf:
+  kwargs:
+    save_dir: "outputs/facescape/own_trainings"
+    version: "KeypointNeRF_own_training"
+
+keypoint_nerf:
             ds_geo:  1
             ds_tex: 1
             v_level: 3

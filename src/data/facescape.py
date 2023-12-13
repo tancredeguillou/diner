@@ -1,6 +1,7 @@
 from torch.utils.data import random_split
 from pathlib import Path
 import os
+import random
 import numpy as np
 import torch
 import json
@@ -18,10 +19,10 @@ OPENCV2OPENGL = np.array([[1., 0., 0., 0.], [0., -1., 0., 0], [0., 0., -1., 0.],
 class FacescapeDataSet(torch.utils.data.Dataset):
     znear = 1.
     zfar = 2.5
-    RGBA_FNAME = "rgba_colorcalib.png"
+    RGBA_FNAME = "rgba_colorcalib_v2.png"
     DEPTH_FNAME = "depth_TransMVSNet.png"
 
-    def __init__(self, root: Path, stage, range_hor=45, range_vert=30, slide_range=40, slide_step=20.,
+    def __init__(self, model, root: Path, stage, range_hor=45, range_vert=30, slide_range=40, slide_step=20,
                  random_ref_views=False, depth_fname=None):
         """
         Capstudio Data Loading Class.
@@ -33,6 +34,7 @@ class FacescapeDataSet(torch.utils.data.Dataset):
         :param kwargs:
         """
         super().__init__()
+        self.model = model
         assert os.path.exists(root)
         self.data_dir = Path(root)
         self.stage = stage
@@ -81,7 +83,6 @@ class FacescapeDataSet(torch.utils.data.Dataset):
                 metas = json.load(f)
         else:
             # creating metas
-            print("creating metas")
             val_subjects = np.loadtxt(meta_dir/"publishable_list_v1.txt", delimiter=",").astype(int)
             val_subjects = [f"{i:03d}" for i in val_subjects]
             train_subjects = sorted([d.name for d in self.data_dir.iterdir()])
@@ -220,7 +221,10 @@ class FacescapeDataSet(torch.utils.data.Dataset):
                 meta = self.metas[idx]
 
                 # obtaining source view idcs
-                source_ids = meta["ref_ids"]
+                source_ids = np.array(meta["ref_ids"])
+                left_source = random.choice(source_ids[:2])
+                right_source = random.choice(source_ids[2:])
+                source_ids = np.stack((left_source, right_source), axis=0).tolist()
                 source_ids = [(np.random.choice(s_ids) if self.random_ref_views else s_ids[0]) for s_ids in source_ids]
                 target_id = meta["target_id"]
 
@@ -228,6 +232,12 @@ class FacescapeDataSet(torch.utils.data.Dataset):
                 sample_path = scan_path / self.int_to_viewdir(int(target_id))
                 source_paths = [scan_path / self.int_to_viewdir(int(source_id)) for source_id in source_ids]
                 cam_path = scan_path / "cameras.json"
+                kpt3d_path = scan_path / "3dlmks.npy"
+                with open(kpt3d_path, 'r') as kpt3d_file:
+                    target_kpt3d = [list(map(float, line.split())) for line in kpt3d_file]
+                # Convert the list of lists to a NumPy array
+                target_kpt3d = np.array(target_kpt3d).astype(np.float32)
+                #target_kpt3d = np.loadtxt(kpt3d_path).astype(np.float32) # , encoding='latin1', allow_pickle=True
 
                 frame, subject = self.get_frame_n_subject(scan_path)
 
@@ -238,52 +248,90 @@ class FacescapeDataSet(torch.utils.data.Dataset):
                 src_depth_std_paths = [source_path / self.DEPTH_STD_FNAME for source_path in source_paths]
 
                 target_rgb, target_alpha = self.read_rgba(target_rgba_path)
-                src_rgbs = list()
-                src_alphas = list()
-                src_depths = list()
-                src_depth_stds = list()
-                for src_rgba_path, src_depth_path, src_depth_std_path in \
-                        zip(src_rgba_paths, src_depth_paths, src_depth_std_paths):
-                    src_rgb, src_alpha = self.read_rgba(src_rgba_path)
-                    src_depth = self.read_depth(src_depth_path)
-                    src_depth_std = self.read_depth(src_depth_std_path)
-                    src_rgbs.append(src_rgb), src_alphas.append(src_alpha), src_depths.append(src_depth)
-                    src_depth_stds.append(src_depth_std)
+                if self.model == 'DINER':
+                    src_rgbs = list()
+                    src_alphas = list()
+                    src_depths = list()
+                    src_depth_stds = list()
+                    for src_rgba_path, src_depth_path, src_depth_std_path in \
+                            zip(src_rgba_paths, src_depth_paths, src_depth_std_paths):
+                        src_rgb, src_alpha = self.read_rgba(src_rgba_path)
+                        src_depth = self.read_depth(src_depth_path)
+                        src_depth_std = self.read_depth(src_depth_std_path)
+                        src_rgbs.append(src_rgb), src_alphas.append(src_alpha), src_depths.append(src_depth)
+                        src_depth_stds.append(src_depth_std)
 
-                src_rgbs = torch.stack(src_rgbs)
-                src_depths = torch.stack(src_depths)
-                src_depth_stds = torch.stack(src_depth_stds)
-                src_depth_stds = self.conf2std(src_depth_stds)
-                src_alphas = torch.stack(src_alphas)
+                    src_rgbs = torch.stack(src_rgbs)
+                    src_depths = torch.stack(src_depths)
+                    src_depth_stds = torch.stack(src_depth_stds)
+                    src_depth_stds = self.conf2std(src_depth_stds)
+                    src_alphas = torch.stack(src_alphas)
 
-                with open(cam_path, "r") as f:
-                    cam_dict = json.load(f)
-                target_extrinsics = torch.tensor(cam_dict[target_id]["extrinsics"])
-                src_extrinsics = torch.tensor([cam_dict[src_id]["extrinsics"] for src_id in source_ids])
-                target_extrinsics = to_homogeneous_trafo(target_extrinsics[None])[0]
-                src_extrinsics = to_homogeneous_trafo(src_extrinsics)
-                target_intrinsics = torch.tensor(cam_dict[target_id]["intrinsics"])
-                src_intrinsics = torch.tensor([cam_dict[src_id]["intrinsics"] for src_id in source_ids])
+                    with open(cam_path, "r") as f:
+                        cam_dict = json.load(f)
+                    target_extrinsics = torch.tensor(cam_dict[target_id]["extrinsics"])
+                    src_extrinsics = torch.tensor([cam_dict[src_id]["extrinsics"] for src_id in source_ids])
+                    target_extrinsics = to_homogeneous_trafo(target_extrinsics[None])[0]
+                    src_extrinsics = to_homogeneous_trafo(src_extrinsics)
+                    target_intrinsics = torch.tensor(cam_dict[target_id]["intrinsics"])
+                    src_intrinsics = torch.tensor([cam_dict[src_id]["intrinsics"] for src_id in source_ids])
 
-                sample = dict(target_rgb=target_rgb,
-                              target_alpha=target_alpha,
-                              target_extrinsics=target_extrinsics,
-                              target_intrinsics=target_intrinsics,
-                              target_view_id=torch.tensor(int(target_id)),
-                              scan_idx=0,
-                              sample_name=f"{subject}-{frame}-{target_id}-{'-'.join(source_ids)}-",
-                              frame=frame,
-                              src_rgbs=src_rgbs,
-                              src_depths=src_depths,
-                              src_depth_stds=src_depth_stds,
-                              src_alphas=src_alphas,
-                              src_extrinsics=src_extrinsics,
-                              src_intrinsics=src_intrinsics,
-                              src_view_ids=torch.tensor([int(src_id) for src_id in source_ids]))
+                    sample = dict(target_rgb=target_rgb,
+                                  target_alpha=target_alpha,
+                                  target_extrinsics=target_extrinsics,
+                                  target_intrinsics=target_intrinsics,
+                                  target_view_id=torch.tensor(int(target_id)),
+                                  scan_idx=0,
+                                  sample_name=f"{subject}-{frame}-{target_id}-{'-'.join(source_ids)}-",
+                                  frame=frame,
+                                  src_rgbs=src_rgbs,
+                                  src_depths=src_depths,
+                                  src_depth_stds=src_depth_stds,
+                                  src_alphas=src_alphas,
+                                  src_extrinsics=src_extrinsics,
+                                  src_intrinsics=src_intrinsics,
+                                  src_view_ids=torch.tensor([int(src_id) for src_id in source_ids]))
 
-                sample = dict_2_torchdict(sample)
+                    sample = dict_2_torchdict(sample)
 
-                return sample
+                    return sample
+                else:
+                    src_rgbs = list()
+                    src_alphas = list()
+                    for src_rgba_path in src_rgba_paths:
+                        src_rgb, src_alpha = self.read_rgba(src_rgba_path)
+                        src_rgbs.append(src_rgb), src_alphas.append(src_alpha)
+
+                    src_rgbs = torch.stack(src_rgbs)
+                    src_alphas = torch.stack(src_alphas)
+
+                    with open(cam_path, "r") as f:
+                        cam_dict = json.load(f)
+                    target_extrinsics = torch.tensor(cam_dict[target_id]["extrinsics"])
+                    src_extrinsics = torch.tensor([cam_dict[src_id]["extrinsics"] for src_id in source_ids])
+                    target_extrinsics = to_homogeneous_trafo(target_extrinsics[None])[0]
+                    src_extrinsics = to_homogeneous_trafo(src_extrinsics)
+                    target_intrinsics = torch.tensor(cam_dict[target_id]["intrinsics"])
+                    src_intrinsics = torch.tensor([cam_dict[src_id]["intrinsics"] for src_id in source_ids])
+
+                    sample = dict(target_rgb=target_rgb,
+                                  target_alpha=target_alpha,
+                                  target_extrinsics=target_extrinsics,
+                                  target_intrinsics=target_intrinsics,
+                                  target_kpt3d=torch.from_numpy(target_kpt3d),
+                                  target_view_id=torch.tensor(int(target_id)),
+                                  scan_idx=0,
+                                  sample_name=f"{subject}-{frame}-{target_id}-{'-'.join(source_ids)}-",
+                                  frame=frame,
+                                  src_rgbs=src_rgbs,
+                                  src_alphas=src_alphas,
+                                  src_extrinsics=src_extrinsics,
+                                  src_intrinsics=src_intrinsics,
+                                  src_view_ids=torch.tensor([int(src_id) for src_id in source_ids]))
+
+                    sample = dict_2_torchdict(sample)
+
+                    return sample
             except Exception as e:
                 print("ERROR", e)
                 time.sleep(np.random.uniform(.5, 1.))

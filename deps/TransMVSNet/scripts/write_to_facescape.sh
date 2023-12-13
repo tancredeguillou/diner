@@ -1,8 +1,16 @@
 #!/bin/bash
-source venv/bin/activate
+
+#SBATCH -n 4
+#SBATCH --mem-per-cpu=2048
+#SBATCH -J write_to_facescape
+#SBATCH -o outputs/out_write_to_facescape.out
+#SBATCH -e outputs/err_write_to_facescape.err
+#SBATCH -t 00-24
+#SBATCH --gpus=rtx_3090:1
+
 export PYTHONPATH="deps/TransMVSNet:$PYTHONPATH"
 
-DATA_ROOT="data/FACESCAPE_PROCESSED/" # path to processed facescape dataset
+DATA_ROOT="/cluster/scratch/tguillou/facescape_color_calibrated" # path to processed facescape dataset
 OUTDEPTHNAME="TransMVSNet"  # prefix of the output depth files
 LOG_DIR="outputs/facescape/TransMVSNet_writing"
 CKPT="assets/ckpts/facescape/TransMVSNet.ckpt"  # path to pretrained checkpoint
@@ -23,6 +31,6 @@ python -m torch.distributed.launch --nproc_per_node=$NGPUS deps/TransMVSNet/trai
 	--trainpath=$DATA_ROOT \
 	--numdepth=384 \
 	--ndepths="96,64,16" \
-	--nviews=4 \
+	--nviews=2 \
 	--depth_inter_r="4.0,1.0,0.5" \
 	--lrepochs="7,10,15:2" | tee -a $LOG_DIR/log.txt
