@@ -11,7 +11,7 @@ import time
 from src.util.torch_helpers import dict_2_torchdict
 from itertools import product
 import tqdm
-from src.util.cam_geometry import to_homogeneous_trafo
+from src.util.cam_geometry import project_3d_to_2d, compute_mask_radius, generate_circular_mask, transform_absolute_to_camera_coordinates, transform_absolute_to_camera_coordinates_np, to_homogeneous_trafo
 
 OPENCV2OPENGL = np.array([[1., 0., 0., 0.], [0., -1., 0., 0], [0., 0., -1., 0.], [0., 0., 0., 1.]], dtype=np.float32)
 
@@ -73,6 +73,85 @@ class FacescapeDataSet(torch.utils.data.Dataset):
     @staticmethod
     def int_to_viewdir(i: int):
         return f"view_{i:05d}"
+    
+    def load_face_bounds(self, scan_path, extrinsics):
+        if not (scan_path / "face_vertices.npy").exists():
+            raise FileNotFoundError("Couldnt find vertices file for scan", scan_path)
+        #vertices_path = os.path.join(self.data_root, human, 'vertices', f'{i}.npy')
+        #xyz = np.load(vertices_path).astype(np.float32)
+        vertices_path = scan_path / "face_vertices.npy"
+        with open(vertices_path, 'r') as vertices_file:
+            vertices = [list(map(float, line.split())) for line in vertices_file]
+        # Convert the list of lists to a NumPy array
+        xyz_abs = np.array(vertices).astype(np.float32)
+        # TODO here change
+        xyz = transform_absolute_to_camera_coordinates_np(xyz_abs, extrinsics).astype(np.float32)
+        min_xyz = np.min(xyz, axis=0)
+        max_xyz = np.max(xyz, axis=0)
+        min_xyz[2] -= 0.05
+        max_xyz[2] += 0.05
+        bounds = np.stack([min_xyz, max_xyz], axis=0)
+        return bounds
+
+    @staticmethod
+    def get_mask_at_box(bounds, K, R, T, H, W):
+        ray_o, ray_d = FacescapeDataSet.get_rays(H, W, K, R, T)
+
+        ray_o = ray_o.reshape(-1, 3).astype(np.float32)
+        ray_d = ray_d.reshape(-1, 3).astype(np.float32)
+        near, far, mask_at_box = FacescapeDataSet.get_near_far(bounds, ray_o, ray_d)
+        return mask_at_box.reshape((H, W))
+
+    @staticmethod
+    def get_rays(H, W, K, R, T):
+        rays_o = -np.dot(R.T, T).ravel()
+
+        i, j = np.meshgrid(
+            np.arange(W, dtype=np.float32),
+            np.arange(H, dtype=np.float32), indexing='xy')
+
+        xy1 = np.stack([i, j, np.ones_like(i)], axis=2)
+        pixel_camera = np.dot(xy1, np.linalg.inv(K).T)
+        pixel_world = np.dot(pixel_camera - T.ravel(), R)
+        rays_d = pixel_world - rays_o[None, None]
+        rays_o = np.broadcast_to(rays_o, rays_d.shape)
+
+        return rays_o, rays_d
+    
+    @staticmethod
+    def get_near_far(bounds, ray_o, ray_d, boffset=(-0.01, 0.01)):
+        """calculate intersections with 3d bounding box"""
+        bounds = bounds + np.array([boffset[0], boffset[1]])[:, None]
+        nominator = bounds[None] - ray_o[:, None]
+        # calculate the step of intersections at six planes of the 3d bounding box
+        ray_d[np.abs(ray_d) < 1e-5] = 1e-5
+        d_intersect = (nominator / ray_d[:, None]).reshape(-1, 6)
+        # calculate the six interections
+        p_intersect = d_intersect[..., None] * ray_d[:, None] + ray_o[:, None]
+        # calculate the intersections located at the 3d bounding box
+        min_x, min_y, min_z, max_x, max_y, max_z = bounds.ravel()
+        eps = 1e-6
+        p_mask_at_box = (p_intersect[..., 0] >= (min_x - eps)) * \
+                        (p_intersect[..., 0] <= (max_x + eps)) * \
+                        (p_intersect[..., 1] >= (min_y - eps)) * \
+                        (p_intersect[..., 1] <= (max_y + eps)) * \
+                        (p_intersect[..., 2] >= (min_z - eps)) * \
+                        (p_intersect[..., 2] <= (max_z + eps))
+        # obtain the intersections of rays which intersect exactly twice
+        mask_at_box = p_mask_at_box.sum(-1) == 2
+        p_intervals = p_intersect[mask_at_box][p_mask_at_box[mask_at_box]].reshape(
+            -1, 2, 3)
+
+        # calculate the step of intersections
+        ray_o = ray_o[mask_at_box]
+        ray_d = ray_d[mask_at_box]
+        norm_ray = np.linalg.norm(ray_d, axis=1)
+        d0 = np.linalg.norm(p_intervals[:, 0] - ray_o, axis=1) / norm_ray
+        d1 = np.linalg.norm(p_intervals[:, 1] - ray_o, axis=1) / norm_ray
+        near = np.minimum(d0, d1)
+        far = np.maximum(d0, d1)
+
+        return near, far, mask_at_box
 
     def get_metas(self):
         meta_dir = Path("assets/data_splits/facescape")
@@ -232,12 +311,6 @@ class FacescapeDataSet(torch.utils.data.Dataset):
                 sample_path = scan_path / self.int_to_viewdir(int(target_id))
                 source_paths = [scan_path / self.int_to_viewdir(int(source_id)) for source_id in source_ids]
                 cam_path = scan_path / "cameras.json"
-                kpt3d_path = scan_path / "3dlmks.npy"
-                with open(kpt3d_path, 'r') as kpt3d_file:
-                    target_kpt3d = [list(map(float, line.split())) for line in kpt3d_file]
-                # Convert the list of lists to a NumPy array
-                target_kpt3d = np.array(target_kpt3d).astype(np.float32)
-                #target_kpt3d = np.loadtxt(kpt3d_path).astype(np.float32) # , encoding='latin1', allow_pickle=True
 
                 frame, subject = self.get_frame_n_subject(scan_path)
 
@@ -248,6 +321,7 @@ class FacescapeDataSet(torch.utils.data.Dataset):
                 src_depth_std_paths = [source_path / self.DEPTH_STD_FNAME for source_path in source_paths]
 
                 target_rgb, target_alpha = self.read_rgba(target_rgba_path)
+                image_shape = target_rgb.shape[1:]
                 if self.model == 'DINER':
                     src_rgbs = list()
                     src_alphas = list()
@@ -296,6 +370,13 @@ class FacescapeDataSet(torch.utils.data.Dataset):
 
                     return sample
                 else:
+                    abs_kpt3d_path = scan_path / "3dlmks.npy"
+                    with open(abs_kpt3d_path, 'r') as kpt3d_file:
+                        abs_target_kpt3d = [list(map(float, line.split())) for line in kpt3d_file]
+                    # Convert the list of lists to a NumPy array
+                    abs_target_kpt3d = np.array(abs_target_kpt3d).astype(np.float32)
+                    abs_target_kpt3d=torch.from_numpy(abs_target_kpt3d)
+                    
                     src_rgbs = list()
                     src_alphas = list()
                     for src_rgba_path in src_rgba_paths:
@@ -309,24 +390,60 @@ class FacescapeDataSet(torch.utils.data.Dataset):
                         cam_dict = json.load(f)
                     target_extrinsics = torch.tensor(cam_dict[target_id]["extrinsics"])
                     src_extrinsics = torch.tensor([cam_dict[src_id]["extrinsics"] for src_id in source_ids])
-                    target_extrinsics = to_homogeneous_trafo(target_extrinsics[None])[0]
-                    src_extrinsics = to_homogeneous_trafo(src_extrinsics)
-                    target_intrinsics = torch.tensor(cam_dict[target_id]["intrinsics"])
-                    src_intrinsics = torch.tensor([cam_dict[src_id]["intrinsics"] for src_id in source_ids])
+                    target_extrinsics = to_homogeneous_trafo(target_extrinsics[None])[0] # (4, 4)
+                    src_extrinsics = to_homogeneous_trafo(src_extrinsics)  # (2, 4, 4)
+                    target_intrinsics = torch.tensor(cam_dict[target_id]["intrinsics"])  # (3, 3)
+                    src_intrinsics = torch.tensor([cam_dict[src_id]["intrinsics"] for src_id in source_ids]) # (2, 3, 3)
+                    
+                    # Project 3D points to 2D for each view
+                    target_kpt2d = project_3d_to_2d(abs_target_kpt3d,
+                                                    target_extrinsics.unsqueeze(0),
+                                                    target_intrinsics.unsqueeze(0)) # (1, 68, 2)
+                    src_kpts2d = project_3d_to_2d(abs_target_kpt3d, src_extrinsics, src_intrinsics) # (2, 68, 2)
+                    # Project 3D center to 2D for each view
+                    target_center_kpt2d = project_3d_to_2d(abs_target_kpt3d.mean(axis=0).unsqueeze(0),
+                                                           target_extrinsics.unsqueeze(0),
+                                                           target_intrinsics.unsqueeze(0)) # (1, 1, 2)
+                    src_center_kpts2d = project_3d_to_2d(abs_target_kpt3d.mean(axis=0).unsqueeze(0),
+                                                         src_extrinsics, src_intrinsics) # (2, 1, 2)
+                    # Compute mask radius with 2D points
+                    target_mask_radius = compute_mask_radius(target_center_kpt2d, target_kpt2d) * 1.5 # TODO test whether it works. Until then multiply by 1.5
+                    src_mask_radius = compute_mask_radius(src_center_kpts2d, src_kpts2d) * 1.5
+                    
+                    target_mask = generate_circular_mask(image_shape,
+                                                         target_center_kpt2d.squeeze(1),
+                                                         target_mask_radius) # (1, 256, 256)
+                    src_mask = generate_circular_mask(image_shape, src_center_kpts2d.squeeze(1), src_mask_radius) # (2, 256, 256)
+                    
+                    target_kpt3d = transform_absolute_to_camera_coordinates(abs_target_kpt3d, target_extrinsics)
+                    
+                    bounds = self.load_face_bounds(scan_path, target_extrinsics.numpy())
+                    H, W = image_shape
+                    mask_at_box = self.get_mask_at_box(
+                        bounds,
+                        target_intrinsics.numpy(),
+                        target_extrinsics[:3, :3].numpy(),
+                        target_extrinsics[:3, -1].numpy(),
+                        H, W)
+                    mask_at_box = mask_at_box.reshape((H, W))
 
                     sample = dict(target_rgb=target_rgb,
                                   target_alpha=target_alpha,
                                   target_extrinsics=target_extrinsics,
                                   target_intrinsics=target_intrinsics,
-                                  target_kpt3d=torch.from_numpy(target_kpt3d),
+                                  target_kpt3d=target_kpt3d,
+                                  target_mask=target_mask.squeeze(0),
                                   target_view_id=torch.tensor(int(target_id)),
                                   scan_idx=0,
+                                  bounds=bounds,
+                                  mask_at_box=mask_at_box,
                                   sample_name=f"{subject}-{frame}-{target_id}-{'-'.join(source_ids)}-",
                                   frame=frame,
                                   src_rgbs=src_rgbs,
                                   src_alphas=src_alphas,
                                   src_extrinsics=src_extrinsics,
                                   src_intrinsics=src_intrinsics,
+                                  src_mask=src_mask,
                                   src_view_ids=torch.tensor([int(src_id) for src_id in source_ids]))
 
                     sample = dict_2_torchdict(sample)

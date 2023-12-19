@@ -1,0 +1,152 @@
+logger:
+  kwargs:
+    save_dir: "outputs/facescape/own_trainings"
+    version: "KeypointNeRF_own_training"
+    
+data:
+  train:
+    dataset:
+      module: src.data.facescape.FacescapeDataSet
+      kwargs:
+        root: /cluster/scratch/tguillou/facescape_color_calibrated
+        range_vert: 30
+        range_hor: 45
+        slide_range: 40
+        slide_step: 20
+        depth_fname: depth_TransMVSNet.png
+    dataloader:
+      kwargs:
+        shuffle: true
+        batch_size: 1
+        num_workers: 4
+
+  val:
+    dataset:
+      module: src.data.facescape.FacescapeDataSet
+      kwargs:
+        root: /cluster/scratch/tguillou/facescape_color_calibrated
+        range_vert: 30
+        range_hor: 45
+        slide_range: 40
+        depth_fname: depth_TransMVSNet.png
+    dataloader:
+      kwargs:
+        shuffle: false
+        batch_size: 1
+        num_workers: 2
+
+trainer:
+  # ckpt_path:
+  kwargs:
+    enable_checkpointing: True
+    accelerator: gpu # delete if gpus
+    #  gpus:
+    devices:
+      - 0
+    val_check_interval: 30000
+    log_every_n_steps: 1000
+    strategy: ddp
+    limit_val_batches: 10
+    check_val_every_n_epoch: null
+    max_epochs: 30
+
+checkpointing:
+  kwargs:
+    every_n_train_steps: 10000
+    save_last: False
+    save_top_k: 1
+
+optimizer_keypointnerf:
+  kwargs:
+    lr: 5e-4
+
+keypoint_nerf:
+            ds_geo:  1
+            ds_tex: 1
+            v_level: 3
+            xy_level: -1
+            z_level: 4
+
+            train_out_h: 64
+            train_out_w: 64
+
+            sp_args:
+                sp_level: 3
+                sp_type: rel_z_decay
+                scale: 1.0
+                sigma: 0.1
+                n_kpt: 68
+            
+            geo_args:
+                n_stack: 1
+                n_downsample: 4
+                out_ch: 64
+                hd: False
+            
+            mlp_geo_args:
+                n_dims1: [
+                    9,
+                    128,
+                    128,
+                    120,
+                    64
+                ]
+                n_dims2: [
+                    128,
+                    64,
+                    64,
+                    2
+                ]
+                skip_dims: [
+                    64,
+                    8
+                ]
+                skip_layers: [
+                    0,
+                    2
+                ]
+                nl_layer: softplus
+                norm: weight
+                pool_types: [
+                    "mean",
+                    "var"
+                ]
+                dualheads: False
+            
+            tex_args: 
+                ngf: 64
+                n_downsample: 3
+                n_blocks: 4
+                n_upsample: 2
+                out_ch: 8
+                norm: instance
+            
+            mlp_tex_args:
+                args:
+                    in_feat_ch: 32
+                    n_samples: 64
+                
+                gcompress:
+                    in_ch: 128
+                    out_ch: 24
+                
+            
+            dr_level: 5
+            dr_kwargs:
+                fine: True
+                uniform: False
+                blur: 3
+                rand_noise_std: 0.01
+                sample_per_ray_c: 64
+                sample_per_ray_f: 64
+            
+            lambdas:
+                lambda_l1_c: 1.0
+                lambda_l1: 10.0
+                lambda_vgg: 0.5
+                lambda_l2: 0.0
+                lambda_lp: 0.0
+                lambda_ssim: 0.0
+                lambda_colab: 0.0
+                lambda_aux: 0.1
+                lambda_ofs: 0.1

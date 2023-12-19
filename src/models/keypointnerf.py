@@ -15,21 +15,28 @@ import tqdm
 import torch
 import kornia as K
 import numpy as np
+from random import Random
 import pytorch_lightning
+from torchvision.utils import save_image
 
 from kornia.utils import tensor_to_image
 from pytorch_lightning.utilities.apply_func import move_data_to_device
+from pytorch_lightning.utilities.rank_zero import rank_zero_only
 
 from src.util.keypointnerf_util import *
+from src.evaluation import eval_suite
+from torch.utils.data.sampler import BatchSampler
+from torch.utils.data.dataloader import DataLoader
 #from . import zju_evaluator
 from .spatial_encoder import SpatialEncoder
 #from .zju_dataset import ZJUDataset
 
 class KeypointNeRFLightningModule(pytorch_lightning.LightningModule):
-    def __init__(self, keypointnerf_conf, lr=5e-4):
+    def __init__(self, keypointnerf_conf, znear, zfar, lr=5e-4, n_samples_score_eval=100):
         super().__init__()
         self.cfg = copy.deepcopy(keypointnerf_conf)
         self.lr = lr
+        self.n_samples_score_eval = n_samples_score_eval
         self.idx = 0
         #self.save_dir = f'{cfg["out_dir"]}/{cfg["expname"]}'
         self.save_hyperparameters()
@@ -38,7 +45,8 @@ class KeypointNeRFLightningModule(pytorch_lightning.LightningModule):
         self.test_dst_name = 'v3'
 
         self.model = KeypointNeRF(self.cfg)
-        self.znear, self.zfar = 2.0, 5.0
+        self.znear = znear
+        self.zfar = zfar
         # self.zju_evaluator = zju_evaluator.ZJUEvaluator()
 
     def configure_optimizers(self):
@@ -304,37 +312,31 @@ class KeypointNeRFLightningModule(pytorch_lightning.LightningModule):
             cv2.imwrite(path, gt_img[:, :, ::-1])
             print(path)
 
-    def decode_batch(self, batch, use_dr=False):
-        img = batch["target_rgb"].float()
-
-        use_dr = True
-
-        Rt = batch["target_extrinsics"] # batch['Rt']
-        K = batch["target_intrinsics"] # batch['K']
-
-        n_batch = Rt.shape[0]
-        n_views = 1
-        if len(Rt.shape) != 3:
-            if use_dr:
-                dr_Rt = Rt[:, 0]
-                Rt = Rt[:, 1:].contiguous()
-                dr_K =  K[:, 0]
-                K = K[:, 1:].contiguous()
-                dr_img = img[:, 0]
-                img = img[:, 1:].contiguous()
-            n_views = Rt.shape[1]
-            Rt = Rt.view(-1, *Rt.shape[2:])
-            K = K.view(-1, *K.shape[2:])
-            img = img.view(-1, *img.shape[2:])
-        extrin = torch.eye(4, device=self.device)[None].repeat(n_batch * n_views, 1, 1)
-        extrin[:, :3, :4] = Rt
+    def decode_batch(self, batch):
+        tar_img_mask = batch['target_mask'] # (2, 256, 256)
+        src_img_mask = batch['src_mask'] # (2, 2, 256, 256)
+        
+        dr_Rt = batch["target_extrinsics"] # (2, 4, 4)
+        Rt = batch["src_extrinsics"] # (2, 2, 4, 4)
+        dr_K =  batch["target_intrinsics"] # (2, 3, 3)
+        K = batch["src_intrinsics"] # (2, 2, 3, 3)
+        dr_img = batch["target_rgb"].float()
+        img = batch["src_rgbs"].float()
+        
+        n_batch = Rt.shape[0] # 2
+        n_views = Rt.shape[1] # 2
+        Rt = Rt.view(-1, *Rt.shape[2:]) # (4, 4, 4)
+        K = K.view(-1, *K.shape[2:]) # (4, 3, 3)
+        img = img.view(-1, *img.shape[2:]) # (4, 3, 256, 256)
+        
+        extrin = Rt
 
         height, width = img.shape[-2:]
         intrin = torch.eye(4, device=self.device)[None].repeat(n_batch * n_views, 1, 1)
         intrin[:, :3, :3] = K[..., :3, :3]
         KRT = torch.bmm(intrin, extrin)
         cam = {
-            "KRT": KRT, 'K': intrin, 'Rt': Rt, 'extrin': extrin,
+            "KRT": KRT, 'K': intrin, 'Rt': Rt[:, :3, :4], 'extrin': extrin,
             "znear": self.znear, "zfar": self.zfar,
             "width": width, "height": height, "nml_scale": 100.0
         }
@@ -349,44 +351,42 @@ class KeypointNeRFLightningModule(pytorch_lightning.LightningModule):
 
         # uniform sampling within frustum
         # in case of multi-view, it picks the first view frustum
-        bbox_min = batch["kpt3d"].min(1)[0]
-        bbox_max = batch["kpt3d"].max(1)[0]
+        bbox_min = kpt3d.min(1)[0]
+        bbox_max = kpt3d.max(1)[0]
         center = 0.5 * (bbox_min + bbox_max)
         length = 0.7 * (bbox_max - bbox_min)
         bbox_min = center - length
         bbox_max = center + length
 
         dr_data = None
-        if use_dr:
-            dr_extrin = torch.eye(4, device=self.device)[None].repeat(n_batch, 1, 1)
-            dr_extrin[:, :3, :4] = dr_Rt.clone()
+        dr_extrin = dr_Rt.clone()
+        dr_intrin = torch.eye(4, device=self.device)[None].repeat(n_batch, 1, 1)
+        dr_intrin[:, :3, :3] = dr_K.clone()
 
-            dr_intrin = torch.eye(4, device=self.device)[None].repeat(n_batch, 1, 1)
-            dr_intrin[:, :3, :3] = dr_K.clone()
-
-            dr_data = {
-                'cam_tar': {
-                    "K": dr_intrin, "RT": dr_extrin, "KRT": torch.bmm(dr_intrin, dr_extrin),
-                    "width": width, "height": height, "nml_scale": 100.,
-                    "znear": self.znear, "zfar": self.zfar,
-                },
-                # "camidx": dr_camidx,
-                "tar": dr_img,
-                'hT': hT,
-                "img": img,
-                "cam": cam,
-                #"mask_at_box": batch['mask_at_box'],
-                #"bounds": batch["bounds"],
-            }
-            dr_data["sp_data"] = sp_data
-            dr_data["objcenter"] = kpt3d[:, 30, :]  # TODO select tip of the nose (in 300W it's the point 30)
-            # if hT is not None:
-            #     dr_data["objcenter"] = hT[:, :3, 3:]
-            # dr_data["id_vec"] = batch.get("id_vec", None)
-            dr_data["bg"] = bkg if "bkg" in batch else None
-            dr_data["camcenter"] = batch.get("camcenter", None)
-            # if "transf2d" in batch:
-            #     dr_data["transf"] = dr_transf
+        dr_data = {
+            'cam_tar': {
+                "K": dr_intrin, "RT": dr_extrin, "KRT": torch.bmm(dr_intrin, dr_extrin),
+                "width": width, "height": height, "nml_scale": 100.,
+                "znear": self.znear, "zfar": self.zfar,
+            },
+            # "camidx": dr_camidx,
+            "tar": dr_img,
+            'hT': hT,
+            "img": img,
+            "cam": cam,
+            "mask_at_box": batch['mask_at_box'],
+            "bounds": batch["bounds"],
+        }
+        dr_data["sp_data"] = sp_data
+        dr_data["objcenter"] = kpt3d.mean(axis=0)  # TODO select tip of the nose (in 300W it's the point 30)
+        # if hT is not None:
+        #     dr_data["objcenter"] = hT[:, :3, 3:]
+        # dr_data["id_vec"] = batch.get("id_vec", None)
+        dr_data["bg"] = bkg if "bkg" in batch else None
+        dr_data["camcenter"] = batch.get("camcenter", None)
+        dr_data['msk'] = tar_img_mask
+        # if "transf2d" in batch:
+        #     dr_data["transf"] = dr_transf
 
         # apply mask over the source images
         params = {
@@ -398,12 +398,23 @@ class KeypointNeRFLightningModule(pytorch_lightning.LightningModule):
             'sp_data': sp_data,
             'invhT': invhT,
             'dr_data': dr_data,
-            #"bounds": batch["bounds"],
+            'tar_img_mask': tar_img_mask,
+            'src_foreground_mask': src_img_mask,
+            "bounds": batch["bounds"],
         }
         return params
 
     def training_step(self, batch, batch_nb):
+        target_rgb = batch["target_rgb"].float()
+        src_rgb = batch["src_rgbs"].float()
+        #print('\n\n\nTarget Image size / min / max:', target_rgb.shape, target_rgb.min().item(), target_rgb.max().item(), flush=True)
+        #print('Src Image size / min / max:', src_rgb.shape, src_rgb.min().item(), src_rgb.max().item(), flush=True)
         tr_batch = self.decode_batch(batch)
+        
+        tr_src_rgb = tr_batch["im"].float()
+        tr_target_rgb = tr_batch["dr_data"]["tar"].float()
+        #print('Tr Target Image size / min / max:', tr_target_rgb.shape, tr_target_rgb.min().item(), tr_target_rgb.max().item(), flush=True)
+        #print('Tr Src Image size / min / max:', tr_src_rgb.shape, tr_src_rgb.min().item(), tr_src_rgb.max().item(), '\n\n\n', flush=True)
         loss_dict = self.model(**tr_batch)
 
         # log
@@ -414,6 +425,7 @@ class KeypointNeRFLightningModule(pytorch_lightning.LightningModule):
 
     @staticmethod
     def _arrange_nerf_images(out_nerf, znear, zfar):
+        #print('MAX BEFORE CLAMP', out_nerf["tex_fg_fine"].max())
         tex_map = out_nerf["tex_fg_fine"].clamp(min=0.0, max=1.0)
         tex_map = tex_map.squeeze(0).permute(1, 2, 0).cpu().numpy()
         return tex_map
@@ -495,24 +507,102 @@ class KeypointNeRFLightningModule(pytorch_lightning.LightningModule):
         out_img = (out_img*255.).astype(np.uint8)
         return out_img
 
-    def validation_step(self, batch, batch_nb):
+
+#     @torch.no_grad()
+#     def validation_step(self, batch, batch_nb):
+#         prefix = 'val/'
+#         tr_batch = self.decode_batch(batch)
+#         out_dict = self.model(**tr_batch)
+        
+#         nerf_level = max(0, int(math.log(tr_batch['im'].shape[-2], 2)) - 5)
+#         out_nerf = self.render_full_nerf_image(tr_batch, nerf_level)
+#         renderings = self._arrange_nerf_images(out_nerf, self.znear, self.zfar)  # H, Wt, 3
+#         src_imgs = self._arrange_src_images(tr_batch['im'], renderings.shape[0])  # H,Ws,3
+#         gt_img = out_nerf['tar_img'].permute(1, 2, 0).cpu().numpy()
+#         log_img = torch.from_numpy(np.concatenate((src_imgs, gt_img, renderings), axis=-2))
+#         self.logger.experiment.add_image(f'{prefix}renderings', log_img.permute(2, 0, 1), self.global_step)
+
+#         out_losses = out_dict['err_dict']
+#         log = {f'{prefix}{key}': val for key, val in out_losses.items() if torch.is_tensor(val)}
+#         log['val_total_loss'] = out_dict['loss']
+
+#         return log
+    
+    @torch.no_grad()
+    def create_prediction_folder(self, outdir, return_last_pred=False, dataloader=None, show_tqdm=False):
+
+        os.makedirs(outdir, exist_ok=True)
+
+        # creating dataloader
+        if dataloader is None:
+            dataset = self.trainer.datamodule.val_set
+            datalen = len(dataset)
+            example_loader = self.trainer.datamodule.val_dataloader()
+            batch_size = example_loader.batch_size
+            num_workers = 0
+            sample_idcs = list(range(datalen))
+            if self.n_samples_score_eval > 0 and self.n_samples_score_eval < datalen:
+                sample_idcs = Random(0).sample(sample_idcs, self.n_samples_score_eval)
+            sample_idcs = torch.tensor(sample_idcs).int()
+            batch_sampler = BatchSampler(sample_idcs, batch_size=batch_size, drop_last=False)
+            dataloader = DataLoader(dataset, batch_sampler=batch_sampler, num_workers=num_workers)
+
+        # predicting and writing images & data
+        iterator = tqdm.tqdm(dataloader, total=len(dataloader), mininterval=30.) if show_tqdm else dataloader
+        for batch in iterator:
+            batch = move_data_to_device(batch, self.device)
+            tr_batch = self.decode_batch(batch) # 'im' (2, 3, 256, 256) -> 2 source views
+            nerf_level = max(0, int(math.log(tr_batch['im'].shape[-2], 2)) - 5) # 3
+            out_nerf = self.render_full_nerf_image(tr_batch, nerf_level) # 'tex_fg_fine' (3, 256, 256)
+            imgs = self._arrange_nerf_images(out_nerf, self.znear, self.zfar)  # H, Wt, 3
+            src_imgs = self._arrange_src_images(tr_batch['im'], imgs.shape[0])  # H,Ws,3
+            gt_imgs = out_nerf['tar_img'].permute(1, 2, 0).cpu().numpy()
+            stems = batch["sample_name"]
+
+            #for i in range(len(imgs)):
+                # save_image(imgs[i], os.path.join(outdir, stems[i] + eval_suite.PRED_SUFFIX))
+                # save_image(depths[i],
+                #            os.path.join(outdir, stems[i] + eval_suite.DEPTH_SUFFIX))
+                # save_image(src_imgs[i], os.path.join(outdir, stems[i] + eval_suite.REF_SUFFIX))
+                # save_image(gt_imgs[i], os.path.join(outdir, stems[i] + eval_suite.GT_SUFFIX))
+            img_bgr = cv2.cvtColor(imgs * 255, cv2.COLOR_RGB2BGR)
+            #print(img_bgr.max(), flush=True)
+            src_img_bgr = cv2.cvtColor(src_imgs * 255, cv2.COLOR_RGB2BGR)
+            gt_img_bgr = cv2.cvtColor(gt_imgs * 255, cv2.COLOR_RGB2BGR)
+            cv2.imwrite(os.path.join(outdir, stems[0] + eval_suite.PRED_SUFFIX), img_bgr)
+            cv2.imwrite(os.path.join(outdir, stems[0] + eval_suite.REF_SUFFIX), src_img_bgr)
+            cv2.imwrite(os.path.join(outdir, stems[0] + eval_suite.GT_SUFFIX), gt_img_bgr)
+
+        if return_last_pred:
+            return dict(pred_rgb=imgs, pred_depth=depths, gt_rgb=gt_imgs, src_rgbs=src_imgs)
+    
+    @torch.no_grad()
+    def validation_step(self, batch, batch_idx):
         prefix = 'val/'
         tr_batch = self.decode_batch(batch)
         out_dict = self.model(**tr_batch)
         
-        nerf_level = max(0, int(math.log(tr_batch['im'].shape[-2], 2)) - 5)
-        out_nerf = self.render_full_nerf_image(tr_batch, nerf_level)
-        renderings = self._arrange_nerf_images(out_nerf, self.znear, self.zfar)  # H, Wt, 3
-        src_imgs = self._arrange_src_images(tr_batch['im'], renderings.shape[0])  # H,Ws,3
-        gt_img = out_nerf['tar_img'].permute(1, 2, 0).cpu().numpy()
-        log_img = torch.from_numpy(np.concatenate((src_imgs, gt_img, renderings), axis=-2))
-        self.logger.experiment.add_image(f'{prefix}renderings', log_img.permute(2, 0, 1), self.global_step)
-
         out_losses = out_dict['err_dict']
         log = {f'{prefix}{key}': val for key, val in out_losses.items() if torch.is_tensor(val)}
         log['val_total_loss'] = out_dict['loss']
-
+        
         return log
+    
+    @rank_zero_only
+    @torch.no_grad()
+    def on_validation_epoch_end(self) -> None:
+        if self.global_step > 0:
+            eval_dir = os.path.join(self.trainer.log_dir,
+                                    f"eval_{self.trainer.global_step:06d}")
+            os.makedirs(eval_dir, exist_ok=True)
+        
+            # saving checkpoint
+            self.trainer.save_checkpoint(os.path.join(eval_dir, f"{self.trainer.global_step:06d}.ckpt"))
+
+            # creating and evaluating visualizations
+            visdir = os.path.join(eval_dir, "visualizations")
+            self.create_prediction_folder(outdir=visdir)
+        
 
 #     def test_step(self, batch, batch_nb):
 #         self.zju_evaluator.result_dir = os.path.join(
@@ -876,9 +966,13 @@ class KeypointNeRF(torch.nn.Module):
 
         out_nerf["tex"] = out_nerf["tex_fg"]
         out_nerf["tex_cal"] = out_nerf["tex_fg"]
+        src_rgb = out_nerf["tex"]
+        #print('\n\n\nTESTING:', src_rgb.shape, src_rgb.min().item(), src_rgb.max().item(), flush=True)
         if "tex_fg_fine" in out_nerf:
             out_nerf["tex_fine"] = out_nerf["tex_fg_fine"]
             out_nerf["tex_cal_fine"] = out_nerf["tex_fg_fine"]
+            src_rgb = out_nerf["tex_fine"]
+            #print('\n\n\nTESTING FINE:', src_rgb.shape, src_rgb.min().item(), src_rgb.max().item(), flush=True)
 
         loss, err_dict = compute_error(out_nerf=out_nerf, vggloss=self.vgg_loss, lambdas=lambdas)
         return dict(loss=loss, err_dict=err_dict, out={"nerf": out_nerf})
@@ -1176,7 +1270,6 @@ class KeypointNeRF(torch.nn.Module):
         return:
             intersection point: (B, N, 3)
         '''
-
         bounds, orig, direct = bounds.squeeze(0), orig.squeeze(0), direct.squeeze(0)  # -1, 3
         orig = orig.expand(direct.shape[0], -1)
         bounds = bounds + th.tensor([boffset[0], boffset[1]])[:, None].to(device=orig.device)

@@ -1,6 +1,113 @@
 import torch
+import torch.nn.functional as F
 import numpy as np
 from scipy.spatial.transform import Slerp as RotSlerp
+
+
+def project_3d_to_2d(kpt3d, extrinsics, intrinsics):
+    """
+    Project 3D keypoints to 2D image plane.
+
+    Parameters:
+    - kpt3d: 3D keypoints (absolute coordinates) [N, 3].
+    - extrinsics: Extrinsic matrix for the camera [B, 4, 4].
+    - intrinsics: Intrinsic matrix for the camera [B, 3, 3].
+
+    Returns:
+    - kpt2d: 2D keypoints (projected coordinates) [B, N, 2].
+    """
+    n_views = extrinsics.shape[0]
+    kpt3d_h = torch.cat((kpt3d, torch.ones_like(kpt3d[:, :1])), dim=1)
+    intrin = torch.eye(4, device=intrinsics.device)[None].repeat(n_views, 1, 1)
+    intrin[:, :3, :3] = intrinsics.clone()
+    kpt2d_homogeneous = torch.matmul(torch.bmm(extrinsics, intrin), kpt3d_h.unsqueeze(0).permute(0, 2, 1))
+    kpt2d = kpt2d_homogeneous[:, :2, :] / kpt2d_homogeneous[:, 2:, :]
+    return kpt2d.permute(0, 2, 1)
+
+
+def transform_absolute_to_camera_coordinates(absolute_coordinates, extrinsics):
+    """
+    Transform 3D absolute coordinates to 3D camera coordinates.
+
+    Parameters:
+    - absolute_coordinates: Tensor of shape (N, 3) representing 3D absolute coordinates.
+    - extrinsics: Tensor of shape (4, 4) representing camera extrinsics matrix.
+
+    Returns:
+    - camera_coordinates: Tensor of shape (N, 3) representing 3D coordinates in camera space.
+    """
+    # Homogeneous coordinates (adding a column of ones)
+    absolute_coordinates_homogeneous = torch.cat([absolute_coordinates, torch.ones(absolute_coordinates.shape[0], 1)], dim=1)
+
+    # Apply extrinsics transformation
+    camera_coordinates_homogeneous = torch.matmul(absolute_coordinates_homogeneous, extrinsics.T)
+
+    # Extract camera coordinates (remove homogeneous component)
+    camera_coordinates = camera_coordinates_homogeneous[:, :3]
+
+    return camera_coordinates
+
+
+def transform_absolute_to_camera_coordinates_np(absolute_coordinates, extrinsics):
+    """
+    Transform 3D absolute coordinates to 3D camera coordinates.
+
+    Parameters:
+    - absolute_coordinates: NumPy array of shape (N, 3) representing 3D absolute coordinates.
+    - extrinsics: NumPy array of shape (4, 4) representing camera extrinsics matrix.
+
+    Returns:
+    - camera_coordinates: NumPy array of shape (N, 3) representing 3D coordinates in camera space.
+    """
+    # Homogeneous coordinates (adding a column of ones)
+    absolute_coordinates_homogeneous = np.column_stack((absolute_coordinates, np.ones(absolute_coordinates.shape[0])))
+
+    # Apply extrinsics transformation
+    camera_coordinates_homogeneous = np.dot(absolute_coordinates_homogeneous, extrinsics.T)
+
+    # Extract camera coordinates (remove homogeneous component)
+    camera_coordinates = camera_coordinates_homogeneous[:, :3]
+
+    return camera_coordinates
+
+
+def compute_mask_radius(center_kpt2D, kpts2d):
+    """
+    Compute the mask radius as the maximum distance between the center and any keypoint.
+
+    Parameters:
+    - center_kpt2D: 2D center.
+    - target_kpt3d: 2D keypoints [N, 2].
+
+    Returns:
+    - mask_radius: Computed mask radius.
+    """
+    # Calculate the distances from the center to all keypoints
+    distances = torch.norm(kpts2d - center_kpt2D, dim=1)
+
+    # Use the maximum distance as the mask radius
+    mask_radius = torch.max(distances)
+
+    return mask_radius.item()
+
+
+def generate_circular_mask(image_shape, center, radius):
+    """
+    Generate a circular mask.
+
+    Parameters:
+    - image_shape: Shape of the image [H, W].
+    - center: Center coordinates of the circle [B, 2].
+    - radius: Radius of the circle.
+
+    Returns:
+    - mask: Binary circular mask [B, H, W].
+    """
+    h, w = image_shape
+    Y, X = torch.meshgrid(torch.arange(0, h), torch.arange(0, w))
+    mask = ((Y - center[:, 1].view(-1, 1, 1))**2 + (X - center[:, 0].view(-1, 1, 1))**2 <= radius**2).float()
+    return mask
+
 
 def gen_rays(extrinsics, intrinsics, W, H, z_near, z_far):
     """

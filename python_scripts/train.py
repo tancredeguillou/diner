@@ -23,7 +23,7 @@ def main():
         raise ValueError(f'Model Name should be DINER or KeypointNeRF but got: {model_name}')
     
     conf = OmegaConf.load(config_path)
-    conf_logger = conf.logger_diner if model_name == 'DINER' else conf.logger_keypointnerf
+    conf_logger = conf.logger
     os.makedirs(conf_logger.kwargs.save_dir, exist_ok=True)
     datamodule = PlDataModule(conf.data.train, conf.data.val, model_name)
     datamodule.setup()
@@ -33,7 +33,8 @@ def main():
         model = DINER(nerf_conf=conf.nerf, renderer_conf=conf.renderer, znear=datamodule.train_set.znear,
                               zfar=datamodule.train_set.zfar, **conf.optimizer_diner.kwargs)
     else:
-        model = KeypointNeRFLightningModule(conf.keypoint_nerf, **conf.optimizer_keypointnerf.kwargs)
+        model = KeypointNeRFLightningModule(conf.keypoint_nerf, znear=datamodule.train_set.znear,
+                              zfar=datamodule.train_set.zfar, **conf.optimizer_keypointnerf.kwargs)
 
     # initialize logger
     logger = TensorBoardLogger(**conf_logger.kwargs, name=None)
