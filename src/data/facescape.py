@@ -7,6 +7,7 @@ import torch
 import json
 from PIL import Image
 from torchvision.transforms.functional import pil_to_tensor
+from torchvision.utils import save_image
 import time
 from src.util.torch_helpers import dict_2_torchdict
 from itertools import product
@@ -83,9 +84,9 @@ class FacescapeDataSet(torch.utils.data.Dataset):
         with open(vertices_path, 'r') as vertices_file:
             vertices = [list(map(float, line.split())) for line in vertices_file]
         # Convert the list of lists to a NumPy array
-        xyz_abs = np.array(vertices).astype(np.float32)
+        xyz = np.array(vertices).astype(np.float32)
         # TODO here change
-        xyz = transform_absolute_to_camera_coordinates_np(xyz_abs, extrinsics).astype(np.float32)
+        # xyz = transform_absolute_to_camera_coordinates_np(xyz_abs, extrinsics).astype(np.float32)
         min_xyz = np.min(xyz, axis=0)
         max_xyz = np.max(xyz, axis=0)
         min_xyz[2] -= 0.05
@@ -296,7 +297,8 @@ class FacescapeDataSet(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         while True:  # working around random permission errors
-            try:
+            #try:
+            if True:
                 meta = self.metas[idx]
 
                 # obtaining source view idcs
@@ -379,13 +381,17 @@ class FacescapeDataSet(torch.utils.data.Dataset):
                     
                     src_rgbs = list()
                     src_alphas = list()
+                    src_masks = list()
                     for src_rgba_path in src_rgba_paths:
                         src_rgb, src_alpha = self.read_rgba(src_rgba_path)
-                        src_rgbs.append(src_rgb), src_alphas.append(src_alpha)
+                        src_mask = src_rgb.sum(0) != 3
+                        src_rgb[~(src_mask.repeat(3, 1, 1))] = 0
+                        src_rgbs.append(src_rgb), src_alphas.append(src_alpha), src_masks.append(src_mask)
 
                     src_rgbs = torch.stack(src_rgbs)
                     src_alphas = torch.stack(src_alphas)
-
+                    src_masks = torch.stack(src_masks)
+                    
                     with open(cam_path, "r") as f:
                         cam_dict = json.load(f)
                     target_extrinsics = torch.tensor(cam_dict[target_id]["extrinsics"])
@@ -396,28 +402,32 @@ class FacescapeDataSet(torch.utils.data.Dataset):
                     src_intrinsics = torch.tensor([cam_dict[src_id]["intrinsics"] for src_id in source_ids]) # (2, 3, 3)
                     
                     # Project 3D points to 2D for each view
-                    target_kpt2d = project_3d_to_2d(abs_target_kpt3d,
-                                                    target_extrinsics.unsqueeze(0),
-                                                    target_intrinsics.unsqueeze(0)) # (1, 68, 2)
-                    src_kpts2d = project_3d_to_2d(abs_target_kpt3d, src_extrinsics, src_intrinsics) # (2, 68, 2)
+                    #target_kpt2d = project_3d_to_2d(abs_target_kpt3d,
+                    #                                target_extrinsics.unsqueeze(0),
+                    #                                target_intrinsics.unsqueeze(0)) # (1, 68, 2)
+                    #src_kpts2d = project_3d_to_2d(abs_target_kpt3d, src_extrinsics, src_intrinsics) # (2, 68, 2)
                     # Project 3D center to 2D for each view
-                    target_center_kpt2d = project_3d_to_2d(abs_target_kpt3d.mean(axis=0).unsqueeze(0),
-                                                           target_extrinsics.unsqueeze(0),
-                                                           target_intrinsics.unsqueeze(0)) # (1, 1, 2)
-                    src_center_kpts2d = project_3d_to_2d(abs_target_kpt3d.mean(axis=0).unsqueeze(0),
-                                                         src_extrinsics, src_intrinsics) # (2, 1, 2)
+                    #target_center_kpt2d = project_3d_to_2d(abs_target_kpt3d.mean(axis=0).unsqueeze(0),
+                    #                                       target_extrinsics.unsqueeze(0),
+                    #                                       target_intrinsics.unsqueeze(0)) # (1, 1, 2)
+                    #src_center_kpts2d = project_3d_to_2d(abs_target_kpt3d.mean(axis=0).unsqueeze(0),
+                    #                                     src_extrinsics, src_intrinsics) # (2, 1, 2)
                     # Compute mask radius with 2D points
-                    target_mask_radius = compute_mask_radius(target_center_kpt2d, target_kpt2d) * 1.5 # TODO test whether it works. Until then multiply by 1.5
-                    src_mask_radius = compute_mask_radius(src_center_kpts2d, src_kpts2d) * 1.5
+                    #target_mask_radius = compute_mask_radius(target_center_kpt2d, target_kpt2d) * 1.5 # TODO test whether it works. Until then multiply by 1.5
+                    #src_mask_radius = compute_mask_radius(src_center_kpts2d, src_kpts2d) * 1.5
                     
-                    target_mask = generate_circular_mask(image_shape,
-                                                         target_center_kpt2d.squeeze(1),
-                                                         target_mask_radius) # (1, 256, 256)
-                    src_mask = generate_circular_mask(image_shape, src_center_kpts2d.squeeze(1), src_mask_radius) # (2, 256, 256)
+                    #target_mask = generate_circular_mask(image_shape,
+                    #                                     target_center_kpt2d.squeeze(1),
+                    #                                     target_mask_radius) # (1, 256, 256)
+                    #src_mask = generate_circular_mask(image_shape, src_center_kpts2d.squeeze(1), src_mask_radius) # (2, 256, 256)
                     
-                    target_kpt3d = transform_absolute_to_camera_coordinates(abs_target_kpt3d, target_extrinsics)
+                    target_mask = (target_rgb.sum(0) != 3)
+                    target_rgb[~(target_mask.repeat(3, 1, 1))] = 0
                     
-                    bounds = self.load_face_bounds(scan_path, target_extrinsics.numpy())
+                    # target_kpt3d = transform_absolute_to_camera_coordinates(abs_target_kpt3d, target_extrinsics)
+                    target_kpt3d = abs_target_kpt3d
+                    
+                    bounds = self.load_face_bounds(scan_path, target_extrinsics)
                     H, W = image_shape
                     mask_at_box = self.get_mask_at_box(
                         bounds,
@@ -426,13 +436,25 @@ class FacescapeDataSet(torch.utils.data.Dataset):
                         target_extrinsics[:3, -1].numpy(),
                         H, W)
                     mask_at_box = mask_at_box.reshape((H, W))
+                    
+                    #mask_img = target_rgb.clone()
+                    #print(mask_img.shape, flush=True)
+                    #print(target_mask.shape, flush=True)
+                    #print(target_mask[..., 0], flush=True)
+                    #save_image(target_rgb, os.path.join(f'{idx}_gt.png'))
+                    #masked_img = mask_img.clone()
+                    #print('mask sum', mask_img.sum(0).shape)
+                    #mask = mask_img.sum(0) != 3
+                    #print('mask.shape')
+                    #masked_img[mask.repeat(3, 1, 1)] = 0
+                    #save_image(masked_img, os.path.join('test_mask', f'{idx}_mask.png'))
 
                     sample = dict(target_rgb=target_rgb,
                                   target_alpha=target_alpha,
                                   target_extrinsics=target_extrinsics,
                                   target_intrinsics=target_intrinsics,
                                   target_kpt3d=target_kpt3d,
-                                  target_mask=target_mask.squeeze(0),
+                                  target_mask=target_mask,
                                   target_view_id=torch.tensor(int(target_id)),
                                   scan_idx=0,
                                   bounds=bounds,
@@ -443,15 +465,15 @@ class FacescapeDataSet(torch.utils.data.Dataset):
                                   src_alphas=src_alphas,
                                   src_extrinsics=src_extrinsics,
                                   src_intrinsics=src_intrinsics,
-                                  src_mask=src_mask,
+                                  src_mask=src_masks,
                                   src_view_ids=torch.tensor([int(src_id) for src_id in source_ids]))
 
                     sample = dict_2_torchdict(sample)
 
                     return sample
-            except Exception as e:
-                print("ERROR", e)
-                time.sleep(np.random.uniform(.5, 1.))
+            #except Exception as e:
+            #    print("ERROR", e)
+            #    time.sleep(np.random.uniform(.5, 1.))
 
     def get_cam_sweep_extrinsics(self, nframes, scan_idx, elevation=0., radius=1.8, sweep_range=None):
         base_sample = self.__getitem__(scan_idx)

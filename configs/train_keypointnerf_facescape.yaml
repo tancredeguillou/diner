@@ -48,7 +48,7 @@ trainer:
     strategy: ddp
     limit_val_batches: 10
     check_val_every_n_epoch: null
-    max_epochs: 30
+    max_epochs: -1
 
 checkpointing:
   kwargs:
@@ -74,7 +74,8 @@ keypoint_nerf:
                 sp_level: 3
                 sp_type: rel_z_decay
                 scale: 1.0
-                sigma: 0.1
+                # sigma in millimiters. 50 or 0.05 (prev 0.1)
+                sigma: 0.05
                 n_kpt: 68
             
             geo_args:

@@ -1,4 +1,4 @@
-logger_diner:
+logger:
   kwargs:
     save_dir: "outputs/facescape/own_trainings"
     version: "DINER_own_training"

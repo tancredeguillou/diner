@@ -105,7 +105,8 @@ def generate_circular_mask(image_shape, center, radius):
     """
     h, w = image_shape
     Y, X = torch.meshgrid(torch.arange(0, h), torch.arange(0, w))
-    mask = ((Y - center[:, 1].view(-1, 1, 1))**2 + (X - center[:, 0].view(-1, 1, 1))**2 <= radius**2).float()
+    mask = ((Y - center[:, 1].view(-1, 1, 1))**2 + (X - center[:, 0].view(-1, 1, 1))**2 <= radius**2)
+    mask = mask.repeat(3, 1, 1)
     return mask
 
 

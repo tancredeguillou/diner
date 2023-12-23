@@ -313,13 +313,13 @@ class KeypointNeRFLightningModule(pytorch_lightning.LightningModule):
             print(path)
 
     def decode_batch(self, batch):
-        tar_img_mask = batch['target_mask'] # (2, 256, 256)
-        src_img_mask = batch['src_mask'] # (2, 2, 256, 256)
+        tar_img_mask = batch['target_mask'] # (bs, 256, 256)
+        src_img_mask = batch['src_mask'] # (bs, 2, 256, 256)
         
-        dr_Rt = batch["target_extrinsics"] # (2, 4, 4)
-        Rt = batch["src_extrinsics"] # (2, 2, 4, 4)
-        dr_K =  batch["target_intrinsics"] # (2, 3, 3)
-        K = batch["src_intrinsics"] # (2, 2, 3, 3)
+        dr_Rt = batch["target_extrinsics"] # (bs, 4, 4)
+        Rt = batch["src_extrinsics"] # (bs, 2, 4, 4)
+        dr_K =  batch["target_intrinsics"] # (bs, 3, 3)
+        K = batch["src_intrinsics"] # (bs, 2, 3, 3)
         dr_img = batch["target_rgb"].float()
         img = batch["src_rgbs"].float()
         
@@ -345,7 +345,7 @@ class KeypointNeRFLightningModule(pytorch_lightning.LightningModule):
 
         sp_data = {"extrin": extrin}
 
-        kpt3d = batch["target_kpt3d"]
+        kpt3d = batch["target_kpt3d"] # (bs, 68, 3)
         if kpt3d is not None:
             sp_data["kpt3d"] = kpt3d
 
@@ -378,7 +378,7 @@ class KeypointNeRFLightningModule(pytorch_lightning.LightningModule):
             "bounds": batch["bounds"],
         }
         dr_data["sp_data"] = sp_data
-        dr_data["objcenter"] = kpt3d.mean(axis=0)  # TODO select tip of the nose (in 300W it's the point 30)
+        dr_data["objcenter"] = kpt3d.mean(axis=1)  # TODO select tip of the nose (in 300W it's the point 30)
         # if hT is not None:
         #     dr_data["objcenter"] = hT[:, :3, 3:]
         # dr_data["id_vec"] = batch.get("id_vec", None)
@@ -805,7 +805,10 @@ class KeypointNeRF(torch.nn.Module):
         mask_xy = (xy >= -1.0 - epsilon) & (xy <= 1.0 + epsilon)
         mask_z = (z >= -1.0)
 
-        out_mask = (mask_xy[..., 0] & mask_xy[..., 1] & mask_z[..., 0])[..., None].float()
+        # TODO this IS THE CHANGE
+        # out_mask = (mask_xy[..., 0] & mask_xy[..., 1] & mask_z[..., 0])[..., None].float()
+        out_mask = (mask_xy[..., 0] | mask_xy[..., 1] | mask_z[..., 0])[..., None].float()
+        
         out_mask = out_mask.view(-1, n_views, *out_mask.shape[1:])
         fg_mask = kwargs['src_foreground_mask'] #V,1,H,W
         fg_mask = fg_mask.view(-1, 1, *fg_mask.shape[-2:])
@@ -815,7 +818,9 @@ class KeypointNeRF(torch.nn.Module):
             else:
                 fg_mask_xy = sample_func(fg_mask.float(), xy)
                 fg_mask_xy = fg_mask_xy.view(-1, n_views, *fg_mask_xy.shape[1:])
+                # TODO this DOES NOT CHANGE
                 out_mask = out_mask*(fg_mask_xy > 0.1).all(1, keepdim=True)*out_mask.bool().all(1, keepdim=True)
+                # out_mask = out_mask*(fg_mask_xy > 0.1).all(1, keepdim=True)*out_mask.bool().any(1, keepdim=True)
 
         # view dropout
         if self.training and n_views > 1:
