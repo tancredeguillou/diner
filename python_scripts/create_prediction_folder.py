@@ -19,6 +19,7 @@ parser.add_argument("--ckpt", type=Path, default=Path("assets/ckpts/facescape/DI
 parser.add_argument("--out", type=Path, default=Path("outputs/facescape/diner_full_evaluation"))
 parser.add_argument("--nsamples", type=int, default=-1, help="samples per ray, -1 (default) uses same as in checkpoint")
 parser.add_argument("--n", type=int, default=-1, help="number of dataset samples to evaluate on, -1 (default) evaluates all")
+parser.add_argument("--model", type=str, default="DINER", help="name of the model")
 args = parser.parse_args()
 
 config_path = args.config
@@ -26,10 +27,11 @@ ckpt_path = args.ckpt
 out_path = args.out
 vis_path = out_path / "visualizations"
 n = args.n
+model_name = args.model
 
 conf = OmegaConf.load(config_path)
 dset_class = import_obj(conf.data.val.dataset.module)
-dataset = dset_class(**conf.data.val.dataset.kwargs, stage="val")
+dataset = dset_class(model_name, **conf.data.val.dataset.kwargs, stage="val")
 datalen = len(dataset)
 sample_idcs = list(range(datalen))
 if n > 0 and n < datalen:

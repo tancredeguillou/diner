@@ -301,13 +301,34 @@ class FacescapeDataSet(torch.utils.data.Dataset):
             if True:
                 meta = self.metas[idx]
 
+                target_id = meta["target_id"]
                 # obtaining source view idcs
                 source_ids = np.array(meta["ref_ids"])
-                left_source = random.choice(source_ids[:2])
-                right_source = random.choice(source_ids[2:])
-                source_ids = np.stack((left_source, right_source), axis=0).tolist()
-                source_ids = [(np.random.choice(s_ids) if self.random_ref_views else s_ids[0]) for s_ids in source_ids]
-                target_id = meta["target_id"]
+                # print('\nSource IDS', source_ids, flush=True)
+                # print('Target ID', target_id, flush=True)
+                if self.stage == "val":
+                    sources_left = source_ids[:2, 1:].flatten()
+                    sources_right = source_ids[2:, 1:].flatten()
+                    # print('\nleft', sources_left, flush=True)
+                    # print('right', sources_right, flush=True)
+                    sources_left = np.unique(sources_left)
+                    sources_right = np.unique(sources_right)
+                    # print('\nleft unique', sources_left, flush=True)
+                    # print('right unique', sources_right, flush=True)
+                    sources_left = sources_left[sources_left != target_id]
+                    sources_right = sources_right[sources_right != target_id]
+                    # print('\nleft filtered', sources_left, flush=True)
+                    # print('right filtered', sources_right, flush=True)
+                    source_left = np.random.choice(sources_left)
+                    sources_right = sources_right[sources_right != source_left]
+                    source_right = np.random.choice(sources_right)
+                    source_ids = [source_left, source_right]
+                    # print('source ids', source_ids, flush=True)
+                else:
+                    left_source = random.choice(source_ids[:2])
+                    right_source = random.choice(source_ids[2:])
+                    source_ids = np.stack((left_source, right_source), axis=0).tolist()
+                    source_ids = [(np.random.choice(s_ids) if self.random_ref_views else s_ids[0]) for s_ids in source_ids]
 
                 scan_path = self.data_dir / meta["scan_path"]
                 sample_path = scan_path / self.int_to_viewdir(int(target_id))
