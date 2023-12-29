@@ -6,6 +6,7 @@ from omegaconf import OmegaConf
 import torch
 from torch.utils.data.dataloader import DataLoader
 from src.models.diner import DINER
+from src.models.keypointnerf import KeypointNeRFLightningModule
 from src.evaluation.eval_suite import evaluate_folder
 from pathlib import Path
 from argparse import ArgumentParser
@@ -40,12 +41,22 @@ sample_idcs = torch.tensor(sample_idcs).int()
 dataloader = DataLoader(dataset, sampler=sample_idcs, drop_last=False, **conf.data.val.dataloader.kwargs)
 ckpt = torch.load(ckpt_path)
 state_dict = ckpt["state_dict"]
-diner = DINER.load_from_checkpoint(ckpt_path).cuda().eval()
-diner.znear = torch.tensor(dataset.znear, device=diner.device)
-diner.zfar = torch.tensor(dataset.zfar, device=diner.device)
-upsample_rate = args.nsamples / diner.renderer.n_samples
-if args.nsamples > 0:
-    diner.renderer.n_samples = args.nsamples
-    diner.renderer.n_gaussian = int(diner.renderer.n_gaussian * upsample_rate)
-diner.create_prediction_folder(vis_path, dataloader=dataloader, show_tqdm=True)
-evaluate_folder(vis_path, out_path)
+
+if model_name == 'DINER':
+    diner = DINER.load_from_checkpoint(ckpt_path).cuda().eval()
+    diner.znear = torch.tensor(dataset.znear, device=diner.device)
+    diner.zfar = torch.tensor(dataset.zfar, device=diner.device)
+    upsample_rate = args.nsamples / diner.renderer.n_samples
+    if args.nsamples > 0:
+        diner.renderer.n_samples = args.nsamples
+        diner.renderer.n_gaussian = int(diner.renderer.n_gaussian * upsample_rate)
+    diner.create_prediction_folder(vis_path, dataloader=dataloader, show_tqdm=True)
+    evaluate_folder(vis_path, out_path)
+elif model_name == 'KeypointNeRF':
+    keypointnerf = KeypointNeRFLightningModule.load_from_checkpoint(ckpt_path).cuda().eval()
+    print('znear / far', keypointnerf.znear, keypointnerf.zfar)
+    keypointnerf.znear = torch.tensor(dataset.znear, device=keypointnerf.device)
+    keypointnerf.zfar = torch.tensor(dataset.zfar, device=keypointnerf.device)
+    print('znear / far', keypointnerf.znear, keypointnerf.zfar)
+    keypointnerf.create_prediction_folder(vis_path, dataloader=dataloader, show_tqdm=True)
+    evaluate_folder(vis_path, out_path)
