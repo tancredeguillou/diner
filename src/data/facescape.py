@@ -10,9 +10,10 @@ from torchvision.transforms.functional import pil_to_tensor
 from torchvision.utils import save_image
 import time
 from src.util.torch_helpers import dict_2_torchdict
+import itertools
 from itertools import product
 import tqdm
-from src.util.cam_geometry import project_3d_to_2d, compute_mask_radius, generate_circular_mask, transform_absolute_to_camera_coordinates, transform_absolute_to_camera_coordinates_np, to_homogeneous_trafo
+from src.util.cam_geometry import to_homogeneous_trafo
 
 OPENCV2OPENGL = np.array([[1., 0., 0., 0.], [0., -1., 0., 0], [0., 0., -1., 0.], [0., 0., 0., 1.]], dtype=np.float32)
 
@@ -75,18 +76,14 @@ class FacescapeDataSet(torch.utils.data.Dataset):
     def int_to_viewdir(i: int):
         return f"view_{i:05d}"
     
-    def load_face_bounds(self, scan_path, extrinsics):
+    def load_face_bounds(self, scan_path):
         if not (scan_path / "face_vertices.npy").exists():
             raise FileNotFoundError("Couldnt find vertices file for scan", scan_path)
-        #vertices_path = os.path.join(self.data_root, human, 'vertices', f'{i}.npy')
-        #xyz = np.load(vertices_path).astype(np.float32)
         vertices_path = scan_path / "face_vertices.npy"
         with open(vertices_path, 'r') as vertices_file:
             vertices = [list(map(float, line.split())) for line in vertices_file]
         # Convert the list of lists to a NumPy array
         xyz = np.array(vertices).astype(np.float32)
-        # TODO here change
-        # xyz = transform_absolute_to_camera_coordinates_np(xyz_abs, extrinsics).astype(np.float32)
         min_xyz = np.min(xyz, axis=0)
         max_xyz = np.max(xyz, axis=0)
         min_xyz[2] -= 0.05
@@ -156,136 +153,16 @@ class FacescapeDataSet(torch.utils.data.Dataset):
 
     def get_metas(self):
         meta_dir = Path("assets/data_splits/facescape")
-        meta_fpath = meta_dir / (self.stage + "_" + str(self.range_hor) + "_" + str(self.range_vert) +
-                                 (f"_{str(self.slide_range)}" if self.slide_range != 0 else "") + ".txt")
+        meta_fpath = meta_dir / (self.stage + "_metas_binocular.txt")
         if meta_fpath.exists():
             with open(meta_fpath, "r") as f:
                 metas = json.load(f)
         else:
-            # creating metas
-            val_subjects = np.loadtxt(meta_dir/"publishable_list_v1.txt", delimiter=",").astype(int)
-            val_subjects = [f"{i:03d}" for i in val_subjects]
-            train_subjects = sorted([d.name for d in self.data_dir.iterdir()])
-            subjects = train_subjects if self.stage == "train" else val_subjects
-            range_hor_rd = self.range_hor / 180 * np.pi
-            range_vert_rd = self.range_vert / 180 * np.pi
-
-            metas = list()
-            sample_idx = 0
-
-            scans = [self.data_dir / s / f"{p:02d}" for s, p in product(subjects, range(1, 21))]
-            for scan in tqdm.tqdm(scans):
-                try:
-                    # check if keypoints are available:
-                    if not (scan / "3dlmks.npy").exists():
-                        raise FileNotFoundError("Couldnt find lmk file for scan", scan)
-
-                    with open(scan / "cameras.json", "r") as f:
-                        cam_dict = json.load(f)
-                    cam_ids = np.array(sorted(cam_dict.keys()))
-
-                    # filtering out available cam_ids
-                    cam_ids = np.array([i for i in cam_ids
-                                        if (scan / self.int_to_viewdir(int(i)) / self.RGBA_FNAME).exists()
-                                        and (scan / self.int_to_viewdir(int(i)) / self.DEPTH_FNAME).exists()
-                                        and self.read_depth(
-                            scan / self.int_to_viewdir(int(i)) / self.DEPTH_FNAME).max() <= self.zfar])
-
-                    extrinsics = np.array([cam_dict[k]["extrinsics"] for k in cam_ids]).astype(np.float32)
-                    cam_center = -extrinsics[:, :3, :3].transpose(0, 2, 1) @ extrinsics[:, :3, -1:]  # N x 3 x 1
-                    cam_dirs = (cam_center / np.sqrt((cam_center ** 2).sum(axis=1, keepdims=True)))[..., 0]  # N x 3
-                    ideal_ref_dirs = np.array([[np.sin(az_ideal) * np.cos(el_ideal),  # Nref x 3
-                                                -np.cos(az_ideal) * np.cos(el_ideal),
-                                                np.sin(el_ideal)]
-                                               for az_ideal, el_ideal in product([-range_hor_rd, range_hor_rd],
-                                                                                 [-range_vert_rd, range_vert_rd])])
-
-                    # filtering out frontal depth min > 2
-                    optical_axis = np.array([0., -1., 0.])
-                    cosdists = np.sum(optical_axis[None] * cam_dirs, axis=-1)
-                    frontal_cam_idx = np.argmax(cosdists)
-                    frontal_cam_id = cam_ids[frontal_cam_idx]
-                    depth_path = scan / self.int_to_viewdir(int(frontal_cam_id)) / self.DEPTH_FNAME
-                    depth = self.read_depth(depth_path)
-                    masked_depth = depth[depth != 0]
-                    min_depth = masked_depth.min()
-                    # import matplotlib.pyplot as plt
-                    # plt.imshow(depth[0], vmin=min_depth.item())
-                    # plt.show()
-                    if min_depth > 2:
-                        print(f"Neglected Scan {scan} bc. min depth of frontal view was {min_depth}")
-                        continue
-
-                    for slide_angle in np.arange(-self.slide_range, self.slide_range + 1, self.slide_step):
-
-                        slide_angle_rd = slide_angle / 180 * np.pi
-                        slide_rotmat = np.array([[np.cos(slide_angle_rd), -np.sin(slide_angle_rd), 0],
-                                                 [np.sin(slide_angle_rd), np.cos(slide_angle_rd), 0],
-                                                 [0., 0., 1.]])
-                        slided_ideal_ref_dirs = (slide_rotmat @ ideal_ref_dirs.T).T  # (Nref x 3)
-
-                        cosdists = np.sum(slided_ideal_ref_dirs[:, None] * cam_dirs[None], axis=-1)  # (Nref, N)
-                        ref_idcs = np.argsort(cosdists, axis=1)[:, ::-1][:, :4]
-                        ref_ids = cam_ids[ref_idcs].tolist()
-
-                        # only use target views inside spanned region
-                        plane_corners = cam_dirs[ref_idcs[:, 0]]  # Nref x 3
-                        plane_normals = np.stack([np.cross(plane_corners[1], plane_corners[0]),
-                                                  np.cross(plane_corners[3], plane_corners[1]),
-                                                  np.cross(plane_corners[2], plane_corners[3]),
-                                                  np.cross(plane_corners[0], plane_corners[2]),
-                                                  ], axis=0)  # Nref x 3
-                        inside_frustum_mask = np.sum((cam_dirs[:, None] * plane_normals[None]), axis=-1)  # N x Nref
-                        inside_frustum_mask = np.all(inside_frustum_mask >= 0, axis=-1)
-
-                        target_ids = cam_ids[inside_frustum_mask].tolist()
-
-                        # # visualize selection
-                        # import matplotlib.pyplot as plt
-                        # all_centers = -extrinsics[:, :3, :3].transpose(0, 2, 1) @ extrinsics[:, :3, -1:]
-                        #
-                        # fig = plt.figure()
-                        # ax = fig.add_subplot(projection="3d")
-                        # s = .1
-                        # for i, color in enumerate(["red", "green", "blue"]):
-                        #     ax.quiver(all_centers[:, 0, 0], all_centers[:, 1, 0], all_centers[:, 2, 0],
-                        #               s * extrinsics[:, i, 0], s * extrinsics[:, i, 1],
-                        #               s * extrinsics[:, i, 2],
-                        #               edgecolor=color)
-                        # for i, id in enumerate(cam_ids):
-                        #     ax.text(all_centers[i, 0, 0], all_centers[i, 1, 0], all_centers[i, 2, 0], id)
-                        # ax.scatter(all_centers[ref_idcs[:, 0]][:, 0],
-                        #            all_centers[ref_idcs[:, 0]][:, 1],
-                        #            all_centers[ref_idcs[:, 0]][:, 2],
-                        #            c="black", zorder=0, s=60)
-                        # ax.scatter(all_centers[inside_frustum_mask][:, 0],
-                        #            all_centers[inside_frustum_mask][:, 1],
-                        #            all_centers[inside_frustum_mask][:, 2],
-                        #            c="orange", zorder=1, s=40)
-                        #
-                        # ax.set_xlabel("X")
-                        # ax.set_ylabel("Y")
-                        # ax.set_zlabel("Z")
-                        # plt.show()
-                        # plt.close()
-
-                        for i in range(len(target_ids)):
-                            if target_ids[i] in [r[0] for r in
-                                                 ref_ids]:  # Skipping first candidate for each reference view
-                                continue
-
-                            sample_meta = dict(idx=sample_idx,
-                                               scan_path=str(scan.relative_to(self.data_dir)),
-                                               target_id=target_ids[i],
-                                               ref_ids=ref_ids)
-                            metas.append(sample_meta)
-                            sample_idx += 1
-                except Exception as e:
-                    print(e)
-
-            with open(meta_fpath, "w") as f:
-                json.dump(metas, f, indent="\t")
-        return metas
+            raise ValueError('Get Metas not implemented. Look at $HOME/metas.py file for reference.')
+        # Repeat metas 20 times for 150000 training samples and 1600 val samples
+        # Repeat metas 5 times for 37000 training samples and 400 val samples
+        repeat_metas = list(itertools.chain.from_iterable(itertools.repeat(meta, 5) for meta in metas))
+        return repeat_metas
 
     def __len__(self):
         return len(self.metas)
@@ -297,38 +174,18 @@ class FacescapeDataSet(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         while True:  # working around random permission errors
-            #try:
-            if True:
+            try:
+            #if True:
                 meta = self.metas[idx]
-
-                target_id = meta["target_id"]
-                # obtaining source view idcs
-                source_ids = np.array(meta["ref_ids"])
-                # print('\nSource IDS', source_ids, flush=True)
-                # print('Target ID', target_id, flush=True)
-                if self.stage == "val":
-                    sources_left = source_ids[:2, 1:].flatten()
-                    sources_right = source_ids[2:, 1:].flatten()
-                    # print('\nleft', sources_left, flush=True)
-                    # print('right', sources_right, flush=True)
-                    sources_left = np.unique(sources_left)
-                    sources_right = np.unique(sources_right)
-                    # print('\nleft unique', sources_left, flush=True)
-                    # print('right unique', sources_right, flush=True)
-                    sources_left = sources_left[sources_left != target_id]
-                    sources_right = sources_right[sources_right != target_id]
-                    # print('\nleft filtered', sources_left, flush=True)
-                    # print('right filtered', sources_right, flush=True)
-                    source_left = np.random.choice(sources_left)
-                    sources_right = sources_right[sources_right != source_left]
-                    source_right = np.random.choice(sources_right)
-                    source_ids = [source_left, source_right]
-                    # print('source ids', source_ids, flush=True)
-                else:
-                    left_source = random.choice(source_ids[:2])
-                    right_source = random.choice(source_ids[2:])
-                    source_ids = np.stack((left_source, right_source), axis=0).tolist()
-                    source_ids = [(np.random.choice(s_ids) if self.random_ref_views else s_ids[0]) for s_ids in source_ids]
+                
+                suffix = "_val" if self.stage == 'val' else ""
+                target_ids = np.array(meta["targets" + suffix])
+                left_ids = np.array(meta["l_refs" + suffix])
+                right_ids = np.array(meta["r_refs" + suffix])
+                target_id = np.random.choice(target_ids)
+                left_id = np.random.choice(left_ids)
+                right_id = np.random.choice(right_ids)
+                source_ids = [left_id, right_id]
 
                 scan_path = self.data_dir / meta["scan_path"]
                 sample_path = scan_path / self.int_to_viewdir(int(target_id))
@@ -422,33 +279,12 @@ class FacescapeDataSet(torch.utils.data.Dataset):
                     target_intrinsics = torch.tensor(cam_dict[target_id]["intrinsics"])  # (3, 3)
                     src_intrinsics = torch.tensor([cam_dict[src_id]["intrinsics"] for src_id in source_ids]) # (2, 3, 3)
                     
-                    # Project 3D points to 2D for each view
-                    #target_kpt2d = project_3d_to_2d(abs_target_kpt3d,
-                    #                                target_extrinsics.unsqueeze(0),
-                    #                                target_intrinsics.unsqueeze(0)) # (1, 68, 2)
-                    #src_kpts2d = project_3d_to_2d(abs_target_kpt3d, src_extrinsics, src_intrinsics) # (2, 68, 2)
-                    # Project 3D center to 2D for each view
-                    #target_center_kpt2d = project_3d_to_2d(abs_target_kpt3d.mean(axis=0).unsqueeze(0),
-                    #                                       target_extrinsics.unsqueeze(0),
-                    #                                       target_intrinsics.unsqueeze(0)) # (1, 1, 2)
-                    #src_center_kpts2d = project_3d_to_2d(abs_target_kpt3d.mean(axis=0).unsqueeze(0),
-                    #                                     src_extrinsics, src_intrinsics) # (2, 1, 2)
-                    # Compute mask radius with 2D points
-                    #target_mask_radius = compute_mask_radius(target_center_kpt2d, target_kpt2d) * 1.5 # TODO test whether it works. Until then multiply by 1.5
-                    #src_mask_radius = compute_mask_radius(src_center_kpts2d, src_kpts2d) * 1.5
-                    
-                    #target_mask = generate_circular_mask(image_shape,
-                    #                                     target_center_kpt2d.squeeze(1),
-                    #                                     target_mask_radius) # (1, 256, 256)
-                    #src_mask = generate_circular_mask(image_shape, src_center_kpts2d.squeeze(1), src_mask_radius) # (2, 256, 256)
-                    
                     target_mask = (target_rgb.sum(0) != 3)
                     target_rgb[~(target_mask.repeat(3, 1, 1))] = 0
                     
-                    # target_kpt3d = transform_absolute_to_camera_coordinates(abs_target_kpt3d, target_extrinsics)
                     target_kpt3d = abs_target_kpt3d
                     
-                    bounds = self.load_face_bounds(scan_path, target_extrinsics)
+                    bounds = self.load_face_bounds(scan_path)
                     H, W = image_shape
                     mask_at_box = self.get_mask_at_box(
                         bounds,
@@ -457,18 +293,6 @@ class FacescapeDataSet(torch.utils.data.Dataset):
                         target_extrinsics[:3, -1].numpy(),
                         H, W)
                     mask_at_box = mask_at_box.reshape((H, W))
-                    
-                    #mask_img = target_rgb.clone()
-                    #print(mask_img.shape, flush=True)
-                    #print(target_mask.shape, flush=True)
-                    #print(target_mask[..., 0], flush=True)
-                    #save_image(target_rgb, os.path.join(f'{idx}_gt.png'))
-                    #masked_img = mask_img.clone()
-                    #print('mask sum', mask_img.sum(0).shape)
-                    #mask = mask_img.sum(0) != 3
-                    #print('mask.shape')
-                    #masked_img[mask.repeat(3, 1, 1)] = 0
-                    #save_image(masked_img, os.path.join('test_mask', f'{idx}_mask.png'))
 
                     sample = dict(target_rgb=target_rgb,
                                   target_alpha=target_alpha,
@@ -492,9 +316,9 @@ class FacescapeDataSet(torch.utils.data.Dataset):
                     sample = dict_2_torchdict(sample)
 
                     return sample
-            #except Exception as e:
-            #    print("ERROR", e)
-            #    time.sleep(np.random.uniform(.5, 1.))
+            except Exception as e:
+                print("ERROR", e)
+                time.sleep(np.random.uniform(.5, 1.))
 
     def get_cam_sweep_extrinsics(self, nframes, scan_idx, elevation=0., radius=1.8, sweep_range=None):
         base_sample = self.__getitem__(scan_idx)

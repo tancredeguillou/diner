@@ -1,14 +1,14 @@
 logger:
   kwargs:
-    save_dir: "outputs/facescape/own_trainings"
-    version: "KeypointNeRF_own_training"
+    save_dir: "outputs/facescape"
+    version: "KeypointNeRF"
     
 data:
   train:
     dataset:
       module: src.data.facescape.FacescapeDataSet
       kwargs:
-        root: /cluster/scratch/tguillou/facescape_color_calibrated
+        root: /cluster/scratch/tguillou/facescape
         range_vert: 30
         range_hor: 45
         slide_range: 40
@@ -24,7 +24,7 @@ data:
     dataset:
       module: src.data.facescape.FacescapeDataSet
       kwargs:
-        root: /cluster/scratch/tguillou/facescape_color_calibrated
+        root: /cluster/scratch/tguillou/facescape
         range_vert: 30
         range_hor: 45
         slide_range: 40
@@ -48,7 +48,7 @@ trainer:
     strategy: ddp
     limit_val_batches: 10
     check_val_every_n_epoch: null
-    max_epochs: -1
+    max_epochs: 30
 
 checkpointing:
   kwargs:

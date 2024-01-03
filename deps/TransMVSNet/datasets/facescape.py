@@ -52,8 +52,7 @@ class MVSDataset(Dataset):
         # reading in diner metas
         diner_metas = list()
         for stage in stages:
-            meta_fpath = meta_dir / (stage + "_" + str(self.range_hor) + "_" + str(self.range_vert) +
-                                     (f"_{str(self.slide_range)}" if self.slide_range != 0 else "") + ".txt")
+            meta_fpath = meta_dir / (stage + "_metas_binocular.txt")
             with open(meta_fpath, "r") as f:
                 diner_metas_ = json.load(f)
             diner_metas += diner_metas_
@@ -63,18 +62,22 @@ class MVSDataset(Dataset):
         old_scan_path = ""
         old_ref_ids = ""
         sample_idx = 0
+        suffix = "_val" if self.stage == 'val' else ""
         for meta in diner_metas:
-            meta_ref_ids = meta["ref_ids"][1:3]
+            left_ids = meta["l_refs" + suffix]
+            right_ids = meta["r_refs" + suffix]
+            meta_ref_ids = [left_ids, right_ids]
             if meta["scan_path"] != old_scan_path or str(meta_ref_ids) != old_ref_ids:
                 old_scan_path = meta["scan_path"]
                 old_ref_ids = str(meta_ref_ids)
-                assert self.nviews == len(meta_ref_ids)
+                assert self.nviews == len(meta_ref_ids), f'Number of views should be {self.nviews} but got {len(meta_ref_ids)}'
+                
                 for i in range(self.nviews):
-                    ref_ids = [r[:1] for r in meta_ref_ids[:i]] + \
-                              [r[:1] for r in meta_ref_ids[i + 1:]]
+                    ref_ids = [r for r in meta_ref_ids[:i]] + \
+                              [r for r in meta_ref_ids[i + 1:]]
                     sample_meta = dict(idx=sample_idx,
                                        scan_path=meta["scan_path"],
-                                       target_ids=meta_ref_ids[i][:1],  # (noptions,)
+                                       target_ids=meta_ref_ids[i],  # (noptions,)
                                        ref_ids=ref_ids)  # (n_views-1, noptions)
                     metas.append(sample_meta)
                     sample_idx += 1
