@@ -29,7 +29,6 @@ python -m torch.distributed.launch --nproc_per_node=$NGPUS deps/TransMVSNet/trai
 	--dataset=facescape \
 	--batch_size=$BATCH_SIZE \
 	--trainpath=$DATA_ROOT \
-    --outpath="/scratch/tmp.42792251.tguillou/pred_depths" \
 	--numdepth=384 \
 	--ndepths="96,64,16" \
 	--nviews=2 \

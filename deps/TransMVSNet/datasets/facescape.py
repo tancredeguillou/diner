@@ -62,7 +62,7 @@ class MVSDataset(Dataset):
         old_scan_path = ""
         old_ref_ids = ""
         sample_idx = 0
-        suffix = "_val" if self.stage == 'val' else ""
+        suffix = "_val" if self.stage == 'test' else ""
         for meta in diner_metas:
             left_ids = meta["l_refs" + suffix]
             right_ids = meta["r_refs" + suffix]
@@ -73,14 +73,27 @@ class MVSDataset(Dataset):
                 assert self.nviews == len(meta_ref_ids), f'Number of views should be {self.nviews} but got {len(meta_ref_ids)}'
                 
                 for i in range(self.nviews):
-                    ref_ids = [r for r in meta_ref_ids[:i]] + \
-                              [r for r in meta_ref_ids[i + 1:]]
-                    sample_meta = dict(idx=sample_idx,
-                                       scan_path=meta["scan_path"],
-                                       target_ids=meta_ref_ids[i],  # (noptions,)
-                                       ref_ids=ref_ids)  # (n_views-1, noptions)
-                    metas.append(sample_meta)
-                    sample_idx += 1
+                    ref_ids = [meta_ref_ids[i]]
+                    target_ids=meta_ref_ids[(i+1)%2]
+
+                    if self.mode in ["write_prediction", "val", "test"]:
+                        for ids_i in range(len(target_ids)):
+                            ref_ids = [[meta_ref_ids[i][ids_i]]]
+                            target_ids = [meta_ref_ids[(i+1)%2][ids_i]]
+                            sample_meta = dict(idx=sample_idx,
+                                           scan_path=meta["scan_path"],
+                                           target_ids=target_ids,  # (noptions,)
+                                           ref_ids=ref_ids)  # (n_views-1, noptions)
+                            metas.append(sample_meta)
+                            sample_idx += 1
+                    else:
+                        sample_meta = dict(idx=sample_idx,
+                                           scan_path=meta["scan_path"],
+                                           target_ids=target_ids,  # (noptions,)
+                                           ref_ids=ref_ids)  # (n_views-1, noptions)
+                        metas.append(sample_meta)
+                        sample_idx += 1
+                        
         return metas
 
     def __len__(self):
@@ -98,12 +111,22 @@ class MVSDataset(Dataset):
         mask = mask.astype(np.float32)
         return np_img, mask
 
-    def read_depth(self, dmap_path):
-        gt_dmap = Image.open(dmap_path)
-        gt_dmap = np.array(gt_dmap)[:, :, np.newaxis].astype(np.float32)  # (H, W, 1)
-        gt_dmap *= 1e-4
-        # gt_dmap = np.clip(gt_dmap, a_min=0, a_max=2.3)
-        return gt_dmap
+    def read_depth(self, view_path):
+        dmap_path = view_path / "depth.png"
+        if dmap_path.exists():
+            gt_dmap = Image.open(dmap_path)
+            gt_dmap = np.array(gt_dmap)[:, :, np.newaxis].astype(np.float32)  # (H, W, 1)
+            gt_dmap *= 1e-4
+            # gt_dmap = np.clip(gt_dmap, a_min=0, a_max=2.3)
+            return gt_dmap
+        else:
+            trans_path = view_path / "depth_TransMVSNet.png"
+            trans_dmap = Image.open(trans_path)
+            gt_dmap = trans_dmap.crop((0, 0, trans_dmap.width / 2, trans_dmap.height))
+            gt_dmap = np.array(gt_dmap)[:, :, np.newaxis].astype(np.float32)  # (H, W, 1)
+            gt_dmap *= 1e-4
+            # gt_dmap = np.clip(gt_dmap, a_min=0, a_max=2.3)
+            return gt_dmap
 
     def multiscale_x(self, x):
         h, w = x.shape
@@ -161,7 +184,7 @@ class MVSDataset(Dataset):
 
             if i == 0:  # reference view
                 dmap_path = view_path / "depth.png"
-                depth = self.read_depth(dmap_path)
+                depth = self.read_depth(view_path)
                 mask_ms = self.multiscale_x(mask[..., 0])
                 depth_ms = self.multiscale_x(depth[..., 0])
 

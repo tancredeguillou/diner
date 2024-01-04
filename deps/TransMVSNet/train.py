@@ -176,19 +176,35 @@ def write_prediction(model, dataloaders, args):
             assert (depth_est.shape[0] == 1) & (len(sample["dpath"]) == 1)
             depth_vis = torch_cmap(depth_est, vmin=depth_est[depth_est != 0].min().detach().cpu().item())
             depth_vis = (depth_vis.cpu().permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+            #print('OG depth', depth_est.shape)
             depth_est = float32_2_uint16(depth_est[0].cpu().numpy())
+            #print('Final depth', depth_est.shape)
             conf = float32_2_uint16(conf[0].cpu().numpy())
             src_path = sample["dpath"][0]
             src_path_stem = ".".join(src_path.split(".")[:-1])
             out_depth_path = os.path.join(args.outpath, src_path_stem + f"_{args.outdepthname}.png")
-            out_conf_path = os.path.join(args.outpath, src_path_stem + f"_{args.outdepthname}_conf.png")
-            out_vis_path = os.path.join(args.outpath, src_path_stem + f"_{args.outdepthname}_vis.png")
+            gt_depth_path = os.path.join(args.outpath, sample["dpath"][0])
+            #out_conf_path = os.path.join(args.outpath, src_path_stem + f"_{args.outdepthname}_conf.png")
+            #out_vis_path = os.path.join(args.outpath, src_path_stem + f"_{args.outdepthname}_vis.png")
 
-            assert out_depth_path != os.path.join(args.outpath, sample["dpath"][0])  # dont overwrite gt depth
+            assert out_depth_path != gt_depth_path  # dont overwrite gt depth
+            
+            if os.path.isfile(gt_depth_path):
+                pred_img = Image.fromarray(depth_est)
+                gt_img = Image.open(gt_depth_path)
+            
+                dst = Image.new('I', (pred_img.width + gt_img.width, pred_img.height))
+                dst.paste(gt_img, (0, 0))
+                dst.paste(pred_img, (gt_img.width, 0))
 
-            Image.fromarray(depth_est).save(out_depth_path)
-            Image.fromarray(conf).save(out_conf_path)
-            Image.fromarray(depth_vis).save(out_vis_path)
+                dst.save(out_depth_path)
+                os.remove(gt_depth_path)
+            else:
+                print("Error: %s file not found" % gt_depth_path)
+                
+            #Image.fromarray(depth_est).save(out_depth_path)
+            #Image.fromarray(conf).save(out_conf_path)
+            #Image.fromarray(depth_vis).save(out_vis_path)
 
 
 def train_sample(model, model_loss, optimizer, sample, args):
