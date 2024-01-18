@@ -3,6 +3,41 @@ import numpy as np
 from scipy.spatial.transform import Slerp as RotSlerp
 
 
+def project_to_relative_coordinates(points_abs, extrinsics, intrinsics):
+    """
+    Project an array of 3D points from absolute coordinates to relative coordinates.
+
+    Parameters:
+        points_abs (numpy.ndarray): Array of 3D points in absolute coordinates, shape (N, 3).
+        extrinsics (numpy.ndarray): Extrinsics matrix (3x4) representing the camera's pose.
+        intrinsics (numpy.ndarray): Intrinsics matrix (3x3) representing the camera's focal length and principal point.
+
+    Returns:
+        numpy.ndarray: Array of 3D points in relative coordinates, shape (N, 3).
+    """
+    # Homogeneous coordinates for the input points
+    points_homogeneous = np.hstack((points_abs, np.ones((points_abs.shape[0], 1))))
+    print(points_homogeneous.shape)
+
+    # Apply extrinsics to get points in camera coordinates
+    points_cam = np.dot(points_homogeneous, extrinsics.T)
+    print(points_cam.shape)
+
+    # Apply intrinsics to get points in relative coordinates
+    points_rel_homogeneous = np.dot(points_cam, intrinsics.T)
+    print(points_rel_homogeneous.shape)
+
+    # Normalize by the last column to get homogeneous coordinates
+    points_rel_homogeneous /= points_rel_homogeneous[:, 2:3]
+    print(points_rel_homogeneous.shape)
+
+    # Extract the relative coordinates
+    points_rel = points_rel_homogeneous[:, :2]
+    print(points_rel.shape)
+
+    return points_rel
+
+
 def gen_rays(extrinsics, intrinsics, W, H, z_near, z_far):
     """
     Calculates camera rays.

@@ -1,19 +1,20 @@
 logger:
   kwargs:
-    save_dir: "outputs/facescape/own_trainings"
-    version: "DINER_own_training"
+    save_dir: "outputs/facescape"
+    version: "OURS_TEST"
 
 data:
   train:
     dataset:
       module: src.data.facescape.FacescapeDataSet
       kwargs:
-        root: /cluster/scratch/tguillou/facescape_color_calibrated
+        root: /cluster/scratch/tguillou/facescape
         range_vert: 30
         range_hor: 45
         slide_range: 40
         slide_step: 20
-        depth_fname: depth_TransMVSNet.png
+        # depth_fname: depth_gt_pred_conf.png
+        # depth_fname: depth_mesh.png
     dataloader:
       kwargs:
         shuffle: true
@@ -24,11 +25,12 @@ data:
     dataset:
       module: src.data.facescape.FacescapeDataSet
       kwargs:
-        root: /cluster/scratch/tguillou/facescape_color_calibrated
+        root: /cluster/scratch/tguillou/facescape
         range_vert: 30
         range_hor: 45
         slide_range: 40
-        depth_fname: depth_TransMVSNet.png
+        # depth_fname: depth_gt_pred_conf.png
+        # depth_fname: depth_mesh.png
     dataloader:
       kwargs:
         shuffle: false
@@ -73,7 +75,7 @@ optimizer_diner:
     lr: 1e-4 # 1e-4
 
 trainer:
-  # ckpt_path:
+  # ckpt_path: /cluster/home/tguillou/diner/outputs/facescape/DINER/epoch=13-step=239999.ckpt
   kwargs:
     enable_checkpointing: True
     accelerator: gpu # delete if gpus

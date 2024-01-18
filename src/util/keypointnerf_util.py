@@ -129,17 +129,46 @@ def compute_error_nerf(out_nerf, lambdas, vggloss):
     loss_pix_c = 0.0
     if "tex_cal" in out_nerf and lambda_l1_c > 0.0:
         losses = pix_loss(out_nerf["tex_cal"], out_nerf["tar_img"], {"l1": lambda_l1_c})
+        loss_one = losses["l1"]
+        #if torch.any(torch.isnan(out_nerf["tex_cal"])):
+        #    raise ValueError('NaN values found in 1')
+        #if torch.any(torch.isnan(out_nerf["tar_img"])):
+        #    raise ValueError('NaN values found in 2')
+        if torch.any(torch.isnan(losses["l1"])):
+            print(torch.any(torch.isnan(out_nerf["tex_cal"])))
+            print(torch.any(torch.isnan(out_nerf["tar_img"])))
+            raise ValueError('NaN values found in ONE')
         loss_pix_c += losses["l1"]
     if "tex_aux_cal" in out_nerf and lambda_l1_c > 0.0 and lambda_aux > 0.0:
         losses = pix_loss(out_nerf["tex_aux_cal"], out_nerf["tar_img"], {"l1": lambda_l1_c})
+        loss_two = losses["l1"]
         loss_pix_c += lambda_aux * losses["l1"]
     if loss_pix_c > 0.0:
+        if loss_pix_c > 100:
+            print('Loss pix stopping', loss_pix_c)
+            print("Loss one ", loss_one)
+            #print("Loss two ", loss_two)
+            pred = out_nerf["tex_cal"].squeeze().permute(1, 2, 0).detach().cpu().numpy()
+            target = out_nerf["tar_img"].squeeze().permute(1, 2, 0).detach().cpu().numpy()
+            cv2.imwrite('/cluster/home/tguillou/tex_cal.png', pred * 255)
+            cv2.imwrite('/cluster/home/tguillou/tar_img.png', target * 255)
+            #cv2.imwrite(out_nerf["tex_aux_cal"].cpu().numpy(), 'tex_aux_cal.png')
+            raise ValueError('loss pix c way too high.')
         err_dict["e_pix_c"] = loss_pix_c
 
     loss_pix_fine, loss_pix_fine_aux = {}, {}
     if "tex_cal_fine" in out_nerf:
         loss_pix_fine = pix_loss(out_nerf["tex_cal_fine"], out_nerf["tar_img"], pix_weights)
+        #if torch.any(torch.isnan(out_nerf["tex_cal_fine"])):
+        #    raise ValueError('NaN values found in 4')
         for k, v in loss_pix_fine.items():
+        #    if torch.any(torch.isnan(v)):
+        #        raise ValueError('NaN values found in 5')
+            if torch.any(torch.isnan(v)):
+                print(torch.any(torch.isnan(out_nerf["tex_cal"])))
+                print(torch.any(torch.isnan(out_nerf["tar_img"])))
+                print(torch.any(torch.isnan(out_nerf["tex_cal_fine"])))
+                raise ValueError('NaN values found in TWO')
             err_dict[f"e_pix_{k}"] = v
     if "tex_aux_cal_fine" in out_nerf and lambda_aux > 0.0:
         loss_pix_fine_aux = pix_loss(
@@ -177,6 +206,12 @@ def pix_loss(src, tar, w_losses={"l1": 1.0}):
             continue
         if k == "l1":
             losses[k] = v * (src - tar).abs().mean()
+            if torch.any(torch.isnan(losses[k])):
+                print(torch.any(torch.isnan(src)))
+                print(torch.any(torch.isnan(tar)))
+                print(torch.any(torch.isnan((src - tar).abs())))
+                print(torch.any(torch.isnan((src - tar).abs().mean())))
+                raise ValueError('NaN values found in THREEE')
         elif k == "l2":
             losses[k] = v * (src - tar).pow(2.0).mean()
         elif k == "lp":

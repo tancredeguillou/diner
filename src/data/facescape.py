@@ -1,9 +1,8 @@
-from torch.utils.data import random_split
 from pathlib import Path
 import os
-import random
 import numpy as np
 import torch
+import time
 import json
 from PIL import Image
 from torchvision.transforms.functional import pil_to_tensor
@@ -22,16 +21,15 @@ class FacescapeDataSet(torch.utils.data.Dataset):
     znear = 1.
     zfar = 2.5
     RGBA_FNAME = "rgba_colorcalib_v2.png"
-    DEPTH_FNAME = "depth_TransMVSNet.png"
+    DEPTH_FNAME = "depth_gt_pred_conf.png"
+    DEPTH_MESH_FNAME = "depth_mesh.png"
 
-    def __init__(self, model, root: Path, stage, range_hor=45, range_vert=30, slide_range=40, slide_step=20,
-                 random_ref_views=False, depth_fname=None):
+    def __init__(self, model, root: Path, stage, range_hor=45, range_vert=30, slide_range=40, slide_step=20, depth_fname=None):
         """
         Capstudio Data Loading Class.
         Camera extrinsics follow OPENCV convention (cams look in positive z direction, y points downwards)
         :param root:
         :param stage:
-        :param source_views: if int: randomly samples <source_views> source views, if list of ints: samples these view ids
         :param banned_views:
         :param kwargs:
         """
@@ -40,14 +38,15 @@ class FacescapeDataSet(torch.utils.data.Dataset):
         assert os.path.exists(root)
         self.data_dir = Path(root)
         self.stage = stage
+        self.rnd = np.random.default_rng() if stage == "train" else np.random.default_rng(128)
         self.DEPTH_FNAME = depth_fname if depth_fname is not None else self.DEPTH_FNAME
+        self.DEPTH_MESH_FNAME = self.DEPTH_MESH_FNAME
         self.range_hor = range_hor
         self.range_vert = range_vert
         self.nsource = 2
         self.slide_range = slide_range
         self.slide_step = slide_step
-        self.random_ref_views = random_ref_views
-        self.DEPTH_STD_FNAME = self.DEPTH_FNAME.replace(".png", "_conf.png")
+        #self.DEPTH_STD_FNAME = self.DEPTH_FNAME.replace(".png", "_conf.png")
         self.conf2std = self._getconf2std()
         self.metas = self.get_metas()
 
@@ -66,11 +65,47 @@ class FacescapeDataSet(torch.utils.data.Dataset):
         return rgb, a
 
     @staticmethod
-    def read_depth(p: Path):
+    def read_depth(p: Path, mp: Path):
         UINT16_MAX = 65535
         SCALE_FACTOR = 1e-4
-        img = pil_to_tensor(Image.open(p)).float() * SCALE_FACTOR
-        return img
+        
+        unprocessed_depth_img = Image.open(p)
+        unprocessed_mesh_depth_img = Image.open(mp)
+        
+        pred_img = pil_to_tensor(unprocessed_mesh_depth_img).float()[:1] * SCALE_FACTOR
+        conf_img = torch.where(pred_img == 0.,
+                               float(0.0),
+                               float(39.0)) * SCALE_FACTOR
+        
+        save_image(pred_img / (SCALE_FACTOR * 256), 'init_mesh.png')
+        save_image(conf_img / (SCALE_FACTOR * 256), 'init_mesh_conf.png')
+        
+        width = unprocessed_depth_img.width // 3
+
+        gt_pil = unprocessed_depth_img.crop((0, 0, width, unprocessed_depth_img.height))
+        pred_pil = unprocessed_depth_img.crop((width, 0, 2 * width, unprocessed_depth_img.height))
+        conf_pil = unprocessed_depth_img.crop((2 * width, 0, unprocessed_depth_img.width, unprocessed_depth_img.height))
+        
+        pred_MVS_img = pil_to_tensor(pred_pil).float() * SCALE_FACTOR
+        conf_MVS_img = pil_to_tensor(conf_pil).float() * SCALE_FACTOR
+        
+        save_image(pred_MVS_img / (SCALE_FACTOR * 256), 'init_depth.png')
+        save_image(conf_MVS_img / (SCALE_FACTOR * 256), 'init_depth_conf.png')
+        
+        # Final Step, Union of both images
+        pred_img = torch.where(torch.logical_and(pred_img == 0., pred_MVS_img != 0.),
+                               pred_MVS_img,
+                               pred_img)
+        conf_img = torch.where(torch.logical_and(conf_img == 0., conf_MVS_img != 0.),
+                               conf_MVS_img,
+                               conf_img)
+        save_image(pred_img / (SCALE_FACTOR * 256), 'final_depth.png')
+        save_image(conf_img / (SCALE_FACTOR * 256), 'final_conf.png')
+        
+        time.sleep(10)
+        raise ValueError('Stopping')
+        
+        return pred_img, conf_img
 
     @staticmethod
     def int_to_viewdir(i: int):
@@ -161,7 +196,8 @@ class FacescapeDataSet(torch.utils.data.Dataset):
             raise ValueError('Get Metas not implemented. Look at $HOME/metas.py file for reference.')
         # Repeat metas 20 times for 150000 training samples and 1600 val samples
         # Repeat metas 5 times for 37000 training samples and 400 val samples
-        repeat_metas = list(itertools.chain.from_iterable(itertools.repeat(meta, 5) for meta in metas))
+        n_repeat = 5 if self.stage == 'train' else 20
+        repeat_metas = list(itertools.chain.from_iterable(itertools.repeat(meta, n_repeat) for meta in metas))
         return repeat_metas
 
     def __len__(self):
@@ -173,45 +209,56 @@ class FacescapeDataSet(torch.utils.data.Dataset):
         return frame, subject
 
     def __getitem__(self, idx):
-        while True:  # working around random permission errors
-            try:
-            #if True:
+        while True:
+            if True:
                 meta = self.metas[idx]
                 
                 suffix = "_val" if self.stage == 'val' else ""
                 target_ids = np.array(meta["targets" + suffix])
                 left_ids = np.array(meta["l_refs" + suffix])
                 right_ids = np.array(meta["r_refs" + suffix])
-                target_id = np.random.choice(target_ids)
-                left_id = np.random.choice(left_ids)
-                right_id = np.random.choice(right_ids)
+                target_id = self.rnd.choice(target_ids)
+                left_id = self.rnd.choice(left_ids)
+                right_id = self.rnd.choice(right_ids)
                 source_ids = [left_id, right_id]
 
                 scan_path = self.data_dir / meta["scan_path"]
+                meta_path = Path(meta["scan_path"])
                 sample_path = scan_path / self.int_to_viewdir(int(target_id))
                 source_paths = [scan_path / self.int_to_viewdir(int(source_id)) for source_id in source_ids]
+                source_depth_paths = [meta_path / self.int_to_viewdir(int(source_id)) for source_id in source_ids]
                 cam_path = scan_path / "cameras.json"
 
                 frame, subject = self.get_frame_n_subject(scan_path)
 
                 target_rgba_path = sample_path / self.RGBA_FNAME
-                target_depth_path = sample_path / self.DEPTH_FNAME
                 src_rgba_paths = [source_path / self.RGBA_FNAME for source_path in source_paths]
-                src_depth_paths = [source_path / self.DEPTH_FNAME for source_path in source_paths]
-                src_depth_std_paths = [source_path / self.DEPTH_STD_FNAME for source_path in source_paths]
+                
+                src_depth_paths = [source_path / self.DEPTH_FNAME for source_path in source_depth_paths]
+                src_depth_paths = [os.path.join(
+                    "/cluster/home/tguillou/depths_gt_pred_conf",
+                    '_'.join(str(src_depth_path).split('/'))
+                ) for src_depth_path in src_depth_paths]
+                
+                src_mesh_depth_paths = [source_path / self.DEPTH_MESH_FNAME for source_path in source_depth_paths]
+                src_mesh_depth_paths = [os.path.join(
+                    "/cluster/home/tguillou/depths_mesh",
+                    '_'.join(str(src_depth_path).split('/'))
+                ) for src_depth_path in src_mesh_depth_paths]
 
                 target_rgb, target_alpha = self.read_rgba(target_rgba_path)
                 image_shape = target_rgb.shape[1:]
-                if self.model == 'DINER':
+                if self.model in ['DINER', 'OURS']:
                     src_rgbs = list()
                     src_alphas = list()
                     src_depths = list()
                     src_depth_stds = list()
-                    for src_rgba_path, src_depth_path, src_depth_std_path in \
-                            zip(src_rgba_paths, src_depth_paths, src_depth_std_paths):
+                    for src_rgba_path, src_depth_path, src_mesh_depth_path in \
+                            zip(src_rgba_paths, src_depth_paths, src_mesh_depth_paths):
                         src_rgb, src_alpha = self.read_rgba(src_rgba_path)
-                        src_depth = self.read_depth(src_depth_path)
-                        src_depth_std = self.read_depth(src_depth_std_path)
+                        src_depth, src_depth_std = self.read_depth(src_depth_path, src_mesh_depth_path)
+                        # src_depth = self.read_depth(src_depth_path)
+                        # src_depth_std = self.read_depth(src_depth_std_path)
                         src_rgbs.append(src_rgb), src_alphas.append(src_alpha), src_depths.append(src_depth)
                         src_depth_stds.append(src_depth_std)
 
@@ -316,9 +363,6 @@ class FacescapeDataSet(torch.utils.data.Dataset):
                     sample = dict_2_torchdict(sample)
 
                     return sample
-            except Exception as e:
-                print("ERROR", e)
-                time.sleep(np.random.uniform(.5, 1.))
 
     def get_cam_sweep_extrinsics(self, nframes, scan_idx, elevation=0., radius=1.8, sweep_range=None):
         base_sample = self.__getitem__(scan_idx)
@@ -514,7 +558,7 @@ class FacescapeDataSet(torch.utils.data.Dataset):
         depth_paths_old = ""
         for meta in tqdm.tqdm(self.metas, desc="Checking Depth Images"):
             scan_path = self.data_dir / meta["scan_path"]
-            source_ids = [(np.random.choice(s_ids) if self.random_ref_views else s_ids[0]) for s_ids in meta["ref_ids"]]
+            source_ids = [s_ids[0] for s_ids in meta["ref_ids"]]
             source_ids = np.unique(np.array(source_ids).flatten())
             depth_paths = [scan_path / self.int_to_viewdir(int(id)) / self.DEPTH_FNAME for id in source_ids]
             depth_paths_new = ",".join([str(dp) for dp in depth_paths])

@@ -27,18 +27,15 @@ from src.util.keypointnerf_util import *
 from src.evaluation import eval_suite
 from torch.utils.data.sampler import BatchSampler
 from torch.utils.data.dataloader import DataLoader
-#from . import zju_evaluator
 from .spatial_encoder import SpatialEncoder
-#from .zju_dataset import ZJUDataset
 
 class KeypointNeRFLightningModule(pytorch_lightning.LightningModule):
-    def __init__(self, keypointnerf_conf, znear, zfar, lr=5e-4, n_samples_score_eval=100):
+    def __init__(self, keypointnerf_conf, znear, zfar, lr=5e-4, n_samples_score_eval=10):
         super().__init__()
         self.cfg = copy.deepcopy(keypointnerf_conf)
         self.lr = lr
         self.n_samples_score_eval = n_samples_score_eval
         self.idx = 0
-        #self.save_dir = f'{cfg["out_dir"]}/{cfg["expname"]}'
         self.save_hyperparameters()
         self.video_dirname = 'video3'
         self.images_dirname = 'images'
@@ -47,7 +44,6 @@ class KeypointNeRFLightningModule(pytorch_lightning.LightningModule):
         self.model = KeypointNeRF(self.cfg)
         self.znear = znear
         self.zfar = zfar
-        # self.zju_evaluator = zju_evaluator.ZJUEvaluator()
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.model.parameters(), lr=self.lr)
@@ -55,39 +51,6 @@ class KeypointNeRFLightningModule(pytorch_lightning.LightningModule):
     @classmethod
     def from_config(cls, cfg, cfg_model):
         return cls(cfg, cfg_model)
-
-#     def train_dataloader(self, batch_size=None):
-#         train_dataset = self.dataset.from_config(self.cfg['dataset'], 'train', self.cfg)
-#         return torch.utils.data.DataLoader(
-#             train_dataset,
-#             shuffle=True,
-#             num_workers=self.cfg['training'].get('train_num_workers', 0),
-#             batch_size=self.cfg['training'].get('train_batch_size', 1) if batch_size is None else batch_size,
-#             collate_fn=self.collate_fn,
-#             pin_memory=True,
-#         )
-
-#     def val_dataloader(self, batch_size=None):
-#         val_dataset = self.dataset.from_config(self.cfg['dataset'], 'val', self.cfg)
-#         return torch.utils.data.DataLoader(
-#             val_dataset,
-#             shuffle=False,
-#             num_workers=self.cfg['training'].get('val_num_workers', 0),
-#             batch_size=self.cfg['training'].get('val_batch_size', 1) if batch_size is None else batch_size,
-#             collate_fn=self.collate_fn,
-#             pin_memory=True,
-#         )
-
-#     def test_dataloader(self, batch_size=None):
-#         test_dataset = self.dataset.from_config(self.cfg['dataset'], 'test', self.cfg)
-#         return torch.utils.data.DataLoader(
-#             test_dataset,
-#             shuffle=False,
-#             num_workers=self.cfg['training'].get('val_num_workers', 0),
-#             batch_size=self.cfg['training'].get('val_batch_size', 1) if batch_size is None else batch_size,
-#             collate_fn=self.collate_fn,
-#             pin_memory=True,
-#         )
 
     def save_ckpt(self, **kwargs):
         pass
@@ -379,14 +342,9 @@ class KeypointNeRFLightningModule(pytorch_lightning.LightningModule):
         }
         dr_data["sp_data"] = sp_data
         dr_data["objcenter"] = kpt3d.mean(axis=1)  # TODO select tip of the nose (in 300W it's the point 30)
-        # if hT is not None:
-        #     dr_data["objcenter"] = hT[:, :3, 3:]
-        # dr_data["id_vec"] = batch.get("id_vec", None)
         dr_data["bg"] = bkg if "bkg" in batch else None
         dr_data["camcenter"] = batch.get("camcenter", None)
         dr_data['msk'] = tar_img_mask
-        # if "transf2d" in batch:
-        #     dr_data["transf"] = dr_transf
 
         # apply mask over the source images
         params = {
@@ -410,11 +368,12 @@ class KeypointNeRFLightningModule(pytorch_lightning.LightningModule):
         #print('\n\n\nTarget Image size / min / max:', target_rgb.shape, target_rgb.min().item(), target_rgb.max().item(), flush=True)
         #print('Src Image size / min / max:', src_rgb.shape, src_rgb.min().item(), src_rgb.max().item(), flush=True)
         tr_batch = self.decode_batch(batch)
-        
+        for k,v in tr_batch.items():
+            if torch.is_tensor(v) and torch.any(torch.isnan(v)):
+                raise ValueError(f'NaN values found in {k}')
+                
         tr_src_rgb = tr_batch["im"].float()
         tr_target_rgb = tr_batch["dr_data"]["tar"].float()
-        #print('Tr Target Image size / min / max:', tr_target_rgb.shape, tr_target_rgb.min().item(), tr_target_rgb.max().item(), flush=True)
-        #print('Tr Src Image size / min / max:', tr_src_rgb.shape, tr_src_rgb.min().item(), tr_src_rgb.max().item(), '\n\n\n', flush=True)
         loss_dict = self.model(**tr_batch)
 
         # log
@@ -549,7 +508,7 @@ class KeypointNeRFLightningModule(pytorch_lightning.LightningModule):
 
         # predicting and writing images & data
         iterator = tqdm.tqdm(dataloader, total=len(dataloader), mininterval=30.) if show_tqdm else dataloader
-        for batch in iterator:
+        for batch in iterator[::20]:
             batch = move_data_to_device(batch, self.device)
             tr_batch = self.decode_batch(batch) # 'im' (2, 3, 256, 256) -> 2 source views
             nerf_level = max(0, int(math.log(tr_batch['im'].shape[-2], 2)) - 5) # 3
@@ -939,7 +898,11 @@ class KeypointNeRF(torch.nn.Module):
         dr_kwargs = self.kwargs.get("dr_kwargs", {})
 
         feat_geo = self.attach_geo_feat(im, return_val=True)
+        #if nan in feat_geo:
+        #    raise ValueError('NaN values found in feat_geo')
         feat_tex = self.attach_tex_feat(im, return_val=True)
+        #if nan in feat_tex:
+        #    raise ValueError('NaN values found in feat_tex')
 
         # random stride
         if self.dr_level == 1:
@@ -966,6 +929,9 @@ class KeypointNeRF(torch.nn.Module):
             src_foreground_mask=kwargs['src_foreground_mask'],
             bounds=kwargs['bounds'],
             **dr_kwargs)
+        for k, v in out_nerf.items():
+            if torch.is_tensor(v) and torch.any(torch.isnan(v)):
+                raise ValueError('NaN values found in out_nerf')
         if self.disable_bg:
             out_nerf["tex_bg"] = 0.0
 

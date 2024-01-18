@@ -2,10 +2,10 @@
 
 #SBATCH -n 4
 #SBATCH --mem-per-cpu=2048
-#SBATCH -J train_DINER_test
-#SBATCH -o outputs/train_DINER_test.out
-#SBATCH -e outputs/train_DINER_test.err
-#SBATCH -t 00-24
+#SBATCH -J train_MESH_DINER_0
+#SBATCH -o outputs/train_MESH_DINER_0.out
+#SBATCH -e outputs/train_MESH_DINER_0.err
+#SBATCH -t 10-24
 #SBATCH --gpus=rtx_3090:1
 #SBATCH -A es_tang
 

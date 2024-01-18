@@ -1,7 +1,7 @@
 logger:
   kwargs:
     save_dir: "outputs/facescape"
-    version: "KeypointNeRF"
+    version: "KeypointNeRF_lr"
     
 data:
   train:
@@ -36,7 +36,7 @@ data:
         num_workers: 2
 
 trainer:
-  # ckpt_path:
+  ckpt_path: /cluster/home/tguillou/diner/outputs/facescape/KeypointNeRF/epoch=11-step=410000.ckpt
   kwargs:
     enable_checkpointing: True
     accelerator: gpu # delete if gpus
@@ -48,7 +48,7 @@ trainer:
     strategy: ddp
     limit_val_batches: 10
     check_val_every_n_epoch: null
-    max_epochs: 30
+    max_epochs: -1
 
 checkpointing:
   kwargs:
@@ -58,7 +58,7 @@ checkpointing:
 
 optimizer_keypointnerf:
   kwargs:
-    lr: 5e-4
+    lr: 1e-4 # 5e-4
 
 keypoint_nerf:
             ds_geo:  1

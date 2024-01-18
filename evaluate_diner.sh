@@ -9,4 +9,4 @@
 #SBATCH --gpus=rtx_3090:1
 #SBATCH -A es_tang
 
-python python_scripts/create_prediction_folder.py --config configs/evaluate_diner_on_facescape.yaml --ckpt assets/ckpts/facescape/DINER.ckpt --out outputs/facescape/diner_full_evaluation --model DINER
+python python_scripts/create_prediction_folder.py --config configs/evaluate_on_facescape.yaml --ckpt assets/ckpts/facescape/DINER.ckpt --out outputs/facescape/diner_full_evaluation --model DINER
