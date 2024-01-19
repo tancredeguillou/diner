@@ -7,7 +7,6 @@ import json
 from PIL import Image
 from torchvision.transforms.functional import pil_to_tensor
 from torchvision.utils import save_image
-import time
 from src.util.torch_helpers import dict_2_torchdict
 import itertools
 from itertools import product
@@ -72,25 +71,24 @@ class FacescapeDataSet(torch.utils.data.Dataset):
         unprocessed_depth_img = Image.open(p)
         unprocessed_mesh_depth_img = Image.open(mp)
         
-        pred_img = pil_to_tensor(unprocessed_mesh_depth_img).float()[:1] * SCALE_FACTOR
+        pred_img = pil_to_tensor(unprocessed_mesh_depth_img).float()[:1]
+        pred_img = torch.where(pred_img == 0.,
+                               float(0.0),
+                               (pred_img / 100.) + 1.)
         conf_img = torch.where(pred_img == 0.,
                                float(0.0),
-                               float(39.0)) * SCALE_FACTOR
-        
-        save_image(pred_img / (SCALE_FACTOR * 256), 'init_mesh.png')
-        save_image(conf_img / (SCALE_FACTOR * 256), 'init_mesh_conf.png')
+                               float(0.8))
         
         width = unprocessed_depth_img.width // 3
 
         gt_pil = unprocessed_depth_img.crop((0, 0, width, unprocessed_depth_img.height))
         pred_pil = unprocessed_depth_img.crop((width, 0, 2 * width, unprocessed_depth_img.height))
-        conf_pil = unprocessed_depth_img.crop((2 * width, 0, unprocessed_depth_img.width, unprocessed_depth_img.height))
+        conf_pil = unprocessed_depth_img.crop((2 * width, 0,
+                                               unprocessed_depth_img.width,
+                                               unprocessed_depth_img.height))
         
         pred_MVS_img = pil_to_tensor(pred_pil).float() * SCALE_FACTOR
         conf_MVS_img = pil_to_tensor(conf_pil).float() * SCALE_FACTOR
-        
-        save_image(pred_MVS_img / (SCALE_FACTOR * 256), 'init_depth.png')
-        save_image(conf_MVS_img / (SCALE_FACTOR * 256), 'init_depth_conf.png')
         
         # Final Step, Union of both images
         pred_img = torch.where(torch.logical_and(pred_img == 0., pred_MVS_img != 0.),
@@ -99,11 +97,9 @@ class FacescapeDataSet(torch.utils.data.Dataset):
         conf_img = torch.where(torch.logical_and(conf_img == 0., conf_MVS_img != 0.),
                                conf_MVS_img,
                                conf_img)
-        save_image(pred_img / (SCALE_FACTOR * 256), 'final_depth.png')
-        save_image(conf_img / (SCALE_FACTOR * 256), 'final_conf.png')
         
-        time.sleep(10)
-        raise ValueError('Stopping')
+        assert ((pred_img == 0.) == (pred_MVS_img == 0.)).all()
+        assert ((conf_img == 0.) == (conf_MVS_img == 0.)).all()
         
         return pred_img, conf_img
 
