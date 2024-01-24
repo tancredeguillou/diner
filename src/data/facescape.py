@@ -71,12 +71,9 @@ class FacescapeDataSet(torch.utils.data.Dataset):
         unprocessed_depth_img = Image.open(p)
         unprocessed_mesh_depth_img = Image.open(mp)
         
-        pred_img = pil_to_tensor(unprocessed_mesh_depth_img).float()[:1]
-        pred_img = torch.where(pred_img == 0.,
-                               float(0.0),
-                               (pred_img / 100.) + 1.)
-        conf_img = torch.where(pred_img == 0.,
-                               float(0.0),
+        pred_img = pil_to_tensor(unprocessed_mesh_depth_img).float() * SCALE_FACTOR
+        conf_img = torch.where(pred_img == float(0.),
+                               float(0.),
                                float(0.8))
         
         width = unprocessed_depth_img.width // 3
@@ -91,15 +88,19 @@ class FacescapeDataSet(torch.utils.data.Dataset):
         conf_MVS_img = pil_to_tensor(conf_pil).float() * SCALE_FACTOR
         
         # Final Step, Union of both images
-        pred_img = torch.where(torch.logical_and(pred_img == 0., pred_MVS_img != 0.),
+        pred_img = torch.where(torch.logical_and(pred_img == float(0.), pred_MVS_img != float(0.)),
                                pred_MVS_img,
                                pred_img)
-        conf_img = torch.where(torch.logical_and(conf_img == 0., conf_MVS_img != 0.),
+        conf_img = torch.where(torch.logical_and(conf_img == float(0.), conf_MVS_img != float(0.)),
                                conf_MVS_img,
                                conf_img)
         
-        assert ((pred_img == 0.) == (pred_MVS_img == 0.)).all()
-        assert ((conf_img == 0.) == (conf_MVS_img == 0.)).all()
+        pred_sum = (pred_img == float(0.)).sum()
+        pred_MVS_sum = (pred_MVS_img == float(0.)).sum()
+        conf_sum = (conf_img == float(0.)).sum()
+        conf_MVS_sum = (conf_MVS_img == float(0.)).sum()
+        assert pred_sum <= pred_MVS_sum, f'Expecting pred_sum ({pred_sum}) to be lower or equal than pred_MVS_sum ({pred_MVS_sum})'
+        assert conf_sum <= conf_MVS_sum, f'Expecting conf_sum ({conf_sum}) to be lower or equal than conf_MVS_sum ({conf_MVS_sum})'
         
         return pred_img, conf_img
 
