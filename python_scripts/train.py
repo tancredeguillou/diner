@@ -20,7 +20,7 @@ from pytorch_lightning.callbacks.progress import TQDMProgressBar
 def main():
     config_path = sys.argv[1]
     model_name = sys.argv[2]
-    if model_name not in ['DINER', 'KeypointNeRF', 'OURS']:
+    if model_name not in ['DINER', 'KeypointNeRF', 'OURS', 'NOVEL']:
         raise ValueError(f'Model Name should be DINER or KeypointNeRF but got: {model_name}')
     
     conf = OmegaConf.load(config_path)
@@ -39,6 +39,9 @@ def main():
     elif model_name == 'OURS':
         # model = OurNeRFLightningModule(conf.keypoint_nerf, znear=datamodule.train_set.znear,
         #                       zfar=datamodule.train_set.zfar, **conf.optimizer_keypointnerf.kwargs)
+        model = DINER(nerf_conf=conf.nerf, renderer_conf=conf.renderer, znear=datamodule.train_set.znear,
+                              zfar=datamodule.train_set.zfar, **conf.optimizer_diner.kwargs)
+    elif model_name == 'NOVEL':
         model = DINER(nerf_conf=conf.nerf, renderer_conf=conf.renderer, znear=datamodule.train_set.znear,
                               zfar=datamodule.train_set.zfar, **conf.optimizer_diner.kwargs)
     else:
