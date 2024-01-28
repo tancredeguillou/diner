@@ -7,7 +7,8 @@ data:
         range_vert: 30
         range_hor: 45
         slide_range: 40
-        depth_fname: depth_mesh.png
+        depth_type: merge
+        # depth_fname: depth_mesh.png
     dataloader:
       kwargs:
         shuffle: False

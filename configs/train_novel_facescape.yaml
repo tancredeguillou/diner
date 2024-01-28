@@ -1,7 +1,7 @@
 logger:
   kwargs:
     save_dir: "outputs/facescape"
-    version: "NOVEL"
+    version: "NOVEL_2"
 
 data:
   train:
@@ -55,7 +55,7 @@ nerf:
         combine_type: average
 
 renderer:
-  module: src.models.nerf_renderer.NeRFRendererDGS
+  module: src.models.nerf_novel_renderer.NeRFRendererDGS
   kwargs:
     n_samples: 40
     n_depth_candidates: 1000

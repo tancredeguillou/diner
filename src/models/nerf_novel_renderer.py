@@ -5,6 +5,7 @@ Code heavily inspired by https://github.com/sxyu/pixel-nerf
 import numpy as np
 import torch
 from torch.special import erf
+from pytorch3d.ops.knn import knn_points
 from dotmap import DotMap
 from src.util.torch_helpers import weighted_mean_n_std
 
@@ -63,7 +64,7 @@ class NeRFRendererDGS(torch.nn.Module):
         return z_samples
 
     @torch.no_grad()
-    def sample_depthguided(self, rays, model, n_samples, n_candidates,
+    def sample_depthguided(self, rays, model, n_samples, n_candidates, target_vertices, offsets,
                            depth_diff_max=0.05, n_gaussian=None):
         """
         Ray sampling guided by reference depth maps
@@ -88,14 +89,21 @@ class NeRFRendererDGS(torch.nn.Module):
 
         assert n_samples >= n_gaussian
 
-        SB, NV, _, _ = model.poses.shape
+        SB, NV, _, _ = model.poses.shape # 2, 2, 4, 4
         device = rays.device
         NR = rays.shape[1]
         z_samples = self.sample_coarse(rays, n_coarse=n_candidates)  # SB, NR, n_candidates
         step_size = (rays[..., -1] - rays[..., -2]) / n_candidates  # SB, NR
-        xyz = rays[..., None, :3] + z_samples.unsqueeze(-1) * rays[..., None, 3:6]
+        xyz = rays[..., None, :3] + z_samples.unsqueeze(-1) * rays[..., None, 3:6] # SB, NR, NC, 3
+        # TODO new part
+        xyz = xyz.view(SB, NR * n_candidates, 3)
+        xyz = self.deform_points(xyz, target_vertices, offsets)
+        xyz = xyz.view(SB, NR, n_candidates, 3)
 
         # Transform query points into the camera spaces of the input views
+        # TODO Here there is some changes
+        # I think the first xyz (above) should be deformed directly ! Because these are the first points in
+        # world space.
         xyz = xyz.reshape(SB, -1, 3).unsqueeze(1).expand(-1, NV, -1, -1)  # (SB, NV, B, 3)
         xyz_rot = torch.matmul(model.poses[:, :, :3, :3], xyz.transpose(-2, -1)).transpose(-2, -1)
         xyz = xyz_rot + model.poses[:, :, :3, -1].unsqueeze(-2)  # (SB, NV, B, 3)
@@ -283,41 +291,57 @@ class NeRFRendererDGS(torch.nn.Module):
 
         return z_samples_depth
     
-    def deform_points(self, points, target_vertices, offset):
+    def deform_points(self, points, target_vertices, offsets):
         """
         Deform points from target space to observation space, using vertices offsets
-        :param points (SB, B, 3), target_vertices (SB, NV, 3), offset (SB, NV, 3)
+        :param points (SB, B, 3), target_vertices (SB, NV, 3), offsets (SB, NV, 3)
         :return (SB, B, 3)
         """
-        print('points', points.shape, flush=True)
-        print('target', target_vertices.shape, flush=True)
-        print('offset', offset.shape, flush=True)
-        
         SB, B, _ = points.shape
-        NV = point.shape[1]
+        #NV = offsets.shape[1]
         
-        r_points = points.repeat(1, 1, NV, 1)
-        r_target_vertices = target_vertices.repeat(1, B, 1, 1)
-        r_offset = offset.repeat(1, B, 1, 1)
+        #r_points = points.repeat(1, 1, NV, 1)
+        #r_target_vertices = target_vertices.repeat(1, B, 1, 1)
+        #r_offsets = offsets.repeat(1, B, 1, 1)
         
-        print('r_points', points.shape, flush=True)
-        print('r_target', target_vertices.shape, flush=True)
-        print('r_offset', offset.shape, flush=True)
+        # print('r_points', points.shape, flush=True)
+        # print('r_target', target_vertices.shape, flush=True)
+        # print('r_offset', offset.shape, flush=True)
         
         # IDEA
-        distances = torch.norm(r_target_vertices - r_points, dim=-1) # (SB, B, NV)
-        print('distances', distances.shape, flush=True)
+#         distances = torch.norm(target_vertices - points, dim=-1) # (SB, B, NV)
+#         print('distances', distances.shape, flush=True)
         
-        closest_vertex = torch.argmin(distances, dim=-1) # (SB, B)
-        print('closest_vertex', closest_vertex.shape, flush=True)
+#         closest_vertex = torch.argmin(distances, dim=-1) # (SB, B)
+#         print('closest_vertex', closest_vertex.shape, flush=True)
         
-        #selected_vertices = vertices[torch.arange(B).unsqueeze(1), indices, :]
-        closest_offsets = offset[torch.arange(SB).unsqueeze(1), closest_vertex, :] # (SB, B, 3)
+#         #selected_vertices = vertices[torch.arange(B).unsqueeze(1), indices, :]
+#         closest_offsets = offset[torch.arange(SB).unsqueeze(1), closest_vertex, :] # (SB, B, 3)
+
+        #points_reshaped = points.reshape((SB * B, 3))
+        #vertices_reshaped = target_vertices.reshape((SB * NV, 3))
+
+        # Compute pairwise distances using cdist
+        #distances = torch.cdist(points_reshaped, vertices_reshaped)
+        _, vert_ids, _ = knn_points(points, target_vertices, K=1)
+        #print(vert_ids.shape, flush=True)
+        #raise ValueError()
+
+        # Find the index of the closest vertex for each point
+        # closest_vertex_indices = torch.argmin(distances, dim=1)
+
+        # Reshape the indices back to (SB, B)
+        # closest_vertex_indices = closest_vertex_indices.view(SB, B)
+
+        # Use the indices to gather the closest vertices
+        #closest_vertices = torch.gather(vertices, 1, vert_ids.unsqueeze(-1).expand(SB, B, 3))
+        
+        closest_offsets = offsets[torch.arange(SB).unsqueeze(1), vert_ids.squeeze(), :] # (SB, B, 3)
         
         deformed_points = points + closest_offsets # (SB, B, 3)
         return deformed_points
 
-    def composite(self, model, rays, z_samp):
+    def composite(self, model, rays, z_samp, target_vertices, offsets):
         """
         Render RGB and depth for each ray using NeRF alpha-compositing formula,
         given sampled positions along each ray (see sample_depthguided)
@@ -361,12 +385,11 @@ class NeRFRendererDGS(torch.nn.Module):
 
         split_points = torch.split(points, eval_batch_size, dim=eval_batch_dim)  # list with tensors (SB, B', 3)
         split_viewdirs = torch.split(viewdirs, eval_batch_size, dim=eval_batch_dim)  # list with tensors (SB, B', 3)
-        
-        deformed_points = self.deform_points(split_points, target_vertices, offset)
-        raise ValueError()
 
         val_all = []
-        for pnts, dirs in zip(deformed_points, split_viewdirs):
+        for pnts, dirs in zip(split_points, split_viewdirs):
+            deformed_points = self.deform_points(pnts, target_vertices, offsets)
+            # raise ValueError()
             val_all.append(model(pnts, viewdirs=dirs))
         points = None
         viewdirs = None
@@ -434,7 +457,7 @@ class NeRFRendererDGS(torch.nn.Module):
         return z_samples
 
     def forward(
-            self, model, rays, want_weights=False,
+            self, model, rays, target_vertices, offsets, want_weights=False,
     ):
         """
         :param model: nerf model (instance of src.models.pixelnerf.PixelNeRF)
@@ -448,13 +471,18 @@ class NeRFRendererDGS(torch.nn.Module):
         """
         assert len(rays.shape) == 3
 
+        # TODO Needs changing
         z_depthguided = self.sample_depthguided(rays, model,
                                                 n_samples=self.n_samples,
                                                 n_candidates=self.n_depth_candidates,
+                                                target_vertices=target_vertices,
+                                                offsets=offsets,
                                                 n_gaussian=self.n_gaussian)  # SB, Nrays, nsamples
+        # I think this only adds uniform depth samples where they are lacking, so we 
+        # may not need to change anything
         z_depthguided = self.fill_up_uniform_samples(z_depthguided, rays)  # (SB, B, Kc)
 
-        fine_weights, fine_rgb, fine_depth = self.composite(model, rays, z_depthguided)
+        fine_weights, fine_rgb, fine_depth = self.composite(model, rays, z_depthguided, target_vertices, offsets)
         outputs = DotMap(fine=self._format_outputs(
             fine_weights, fine_rgb, fine_depth, want_weights=want_weights))
 

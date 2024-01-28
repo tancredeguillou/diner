@@ -67,7 +67,7 @@ class FacescapeDataSet(torch.utils.data.Dataset):
         UINT16_MAX = 65535
         SCALE_FACTOR = 1e-4
         
-        unprocessed_depth_img = Image.open(p)
+        # unprocessed_depth_img = Image.open(p)
         unprocessed_mesh_depth_img = Image.open(mp)
         
         pred_img = pil_to_tensor(unprocessed_mesh_depth_img).float() * SCALE_FACTOR
@@ -75,24 +75,24 @@ class FacescapeDataSet(torch.utils.data.Dataset):
                                float(0.),
                                float(0.8))
         
-        width = unprocessed_depth_img.width // 3
+#         width = unprocessed_depth_img.width // 3
 
-        gt_pil = unprocessed_depth_img.crop((0, 0, width, unprocessed_depth_img.height))
-        pred_pil = unprocessed_depth_img.crop((width, 0, 2 * width, unprocessed_depth_img.height))
-        conf_pil = unprocessed_depth_img.crop((2 * width, 0,
-                                               unprocessed_depth_img.width,
-                                               unprocessed_depth_img.height))
+#         gt_pil = unprocessed_depth_img.crop((0, 0, width, unprocessed_depth_img.height))
+#         pred_pil = unprocessed_depth_img.crop((width, 0, 2 * width, unprocessed_depth_img.height))
+#         conf_pil = unprocessed_depth_img.crop((2 * width, 0,
+#                                                unprocessed_depth_img.width,
+#                                                unprocessed_depth_img.height))
         
-        pred_MVS_img = pil_to_tensor(pred_pil).float() * SCALE_FACTOR
-        conf_MVS_img = pil_to_tensor(conf_pil).float() * SCALE_FACTOR
+#         pred_MVS_img = pil_to_tensor(pred_pil).float() * SCALE_FACTOR
+#         conf_MVS_img = pil_to_tensor(conf_pil).float() * SCALE_FACTOR
         
-        # Final Step, Union of both images
-        pred_img = torch.where(torch.logical_and(pred_img == float(0.), pred_MVS_img != float(0.)),
-                               pred_MVS_img,
-                               pred_img)
-        conf_img = torch.where(torch.logical_and(conf_img == float(0.), conf_MVS_img != float(0.)),
-                               conf_MVS_img,
-                               conf_img)
+#         # Final Step, Union of both images
+#         pred_img = torch.where(torch.logical_and(pred_img == float(0.), pred_MVS_img != float(0.)),
+#                                pred_MVS_img,
+#                                pred_img)
+#         conf_img = torch.where(torch.logical_and(conf_img == float(0.), conf_MVS_img != float(0.)),
+#                                conf_MVS_img,
+#                                conf_img)
         
         return pred_img, conf_img
 
@@ -185,8 +185,11 @@ class FacescapeDataSet(torch.utils.data.Dataset):
             raise ValueError('Get Metas not implemented. Look at $HOME/metas.py file for reference.')
         # Repeat metas 400 times for 150000 training samples and 1600 val samples
         # Repeat metas 100 times for 37000 training samples and 400 val samples
+        new_metas = list()
+        new_metas = [meta for meta in metas if meta["subject"] not in ["095", "160", "170", "291"]]
+        
         n_repeat = 100 if self.stage == 'train' else 400
-        repeat_metas = list(itertools.chain.from_iterable(itertools.repeat(meta, n_repeat) for meta in metas))
+        repeat_metas = list(itertools.chain.from_iterable(itertools.repeat(meta, n_repeat) for meta in new_metas))
         return repeat_metas
 
     def __len__(self):
@@ -209,6 +212,7 @@ class FacescapeDataSet(torch.utils.data.Dataset):
             target_ids = np.array(target_expression["targets"])
             left_ids = np.array(ref_expression["left_refs"])
             right_ids = np.array(ref_expression["right_refs"])
+            
             target_id = self.rnd.choice(target_ids)
             left_id = self.rnd.choice(left_ids)
             right_id = self.rnd.choice(right_ids)
@@ -239,7 +243,7 @@ class FacescapeDataSet(torch.utils.data.Dataset):
 
             src_mesh_depth_paths = [source_path / self.DEPTH_MESH_FNAME for source_path in source_depth_paths]
             src_mesh_depth_paths = [os.path.join(
-                "/cluster/home/tguillou/depths_mesh",
+                "/cluster/home/tguillou/novel_depths_mesh",
                 '_'.join(str(src_depth_path).split('/'))
             ) for src_depth_path in src_mesh_depth_paths]
 
@@ -276,15 +280,12 @@ class FacescapeDataSet(torch.utils.data.Dataset):
             target_intrinsics = torch.tensor(target_cam_dict[target_id]["intrinsics"])
             src_intrinsics = torch.tensor([ref_cam_dict[src_id]["intrinsics"] for src_id in source_ids])
 
-            face_vertices = np.load(ref_scan_path / "face_vertices.npy")
             ref_vertices_path = ref_scan_path / "face_vertices.npy"
             with open(ref_vertices_path, 'r') as ref_vertices_file:
                 ref_vertices = [list(map(float, line.split())) for line in ref_vertices_file]
             # Convert the list of lists to a NumPy array
             ref_vertices = np.array(ref_vertices).astype(np.float32)
             ref_vertices = torch.from_numpy(ref_vertices)
-            print(ref_vertices.shape, flush=True)
-            raise ValueError()
 
             target_vertices_path = target_scan_path / "face_vertices.npy"
             with open(target_vertices_path, 'r') as target_vertices_file:
@@ -294,8 +295,6 @@ class FacescapeDataSet(torch.utils.data.Dataset):
             target_vertices = torch.from_numpy(target_vertices)
 
             offset_target_to_source = ref_vertices - target_vertices
-            print(offset_target_to_source.min(), offset_target_to_source.max(), flush=True)
-            raise ValueError ()
 
             sample = dict(target_rgb=target_rgb,
                           target_alpha=target_alpha,
@@ -304,8 +303,9 @@ class FacescapeDataSet(torch.utils.data.Dataset):
                           target_vertices=target_vertices,
                           target_view_id=torch.tensor(int(target_id)),
                           scan_idx=0,
-                          sample_name=f"{subject}-{frame}-{target_id}-{'-'.join(source_ids)}-",
-                          frame=frame,
+                          sample_name=f"{subject}-{ref_frame}-{target_frame}-{target_id}-{'-'.join(source_ids)}-",
+                          ref_frame=ref_frame,
+                          target_frame=target_frame,
                           src_rgbs=src_rgbs,
                           src_depths=src_depths,
                           src_depth_stds=src_depth_stds,

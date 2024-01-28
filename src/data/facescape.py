@@ -23,7 +23,7 @@ class FacescapeDataSet(torch.utils.data.Dataset):
     DEPTH_FNAME = "depth_gt_pred_conf.png"
     DEPTH_MESH_FNAME = "depth_mesh.png"
 
-    def __init__(self, model, root: Path, stage, range_hor=45, range_vert=30, slide_range=40, slide_step=20, depth_fname=None):
+    def __init__(self, model, root: Path, stage, range_hor=45, range_vert=30, slide_range=40, slide_step=20, depth_type='original', depth_fname=None):
         """
         Capstudio Data Loading Class.
         Camera extrinsics follow OPENCV convention (cams look in positive z direction, y points downwards)
@@ -45,6 +45,8 @@ class FacescapeDataSet(torch.utils.data.Dataset):
         self.nsource = 2
         self.slide_range = slide_range
         self.slide_step = slide_step
+        print('DEPTH_TYPE = ', depth_type, flush=True)
+        self.depth_type = depth_type
         #self.DEPTH_STD_FNAME = self.DEPTH_FNAME.replace(".png", "_conf.png")
         self.conf2std = self._getconf2std()
         self.metas = self.get_metas()
@@ -64,7 +66,7 @@ class FacescapeDataSet(torch.utils.data.Dataset):
         return rgb, a
 
     @staticmethod
-    def read_depth(p: Path, mp: Path):
+    def read_depth(p: Path, mp: Path, depth_type='original'):
         UINT16_MAX = 65535
         SCALE_FACTOR = 1e-4
         
@@ -87,22 +89,21 @@ class FacescapeDataSet(torch.utils.data.Dataset):
         pred_MVS_img = pil_to_tensor(pred_pil).float() * SCALE_FACTOR
         conf_MVS_img = pil_to_tensor(conf_pil).float() * SCALE_FACTOR
         
-        # Final Step, Union of both images
-        pred_img = torch.where(torch.logical_and(pred_img == float(0.), pred_MVS_img != float(0.)),
-                               pred_MVS_img,
-                               pred_img)
-        conf_img = torch.where(torch.logical_and(conf_img == float(0.), conf_MVS_img != float(0.)),
-                               conf_MVS_img,
-                               conf_img)
-        
-        pred_sum = (pred_img == float(0.)).sum()
-        pred_MVS_sum = (pred_MVS_img == float(0.)).sum()
-        conf_sum = (conf_img == float(0.)).sum()
-        conf_MVS_sum = (conf_MVS_img == float(0.)).sum()
-        assert pred_sum <= pred_MVS_sum, f'Expecting pred_sum ({pred_sum}) to be lower or equal than pred_MVS_sum ({pred_MVS_sum})'
-        assert conf_sum <= conf_MVS_sum, f'Expecting conf_sum ({conf_sum}) to be lower or equal than conf_MVS_sum ({conf_MVS_sum})'
-        
-        return pred_img, conf_img
+        if depth_type == 'original':
+            return pred_MVS_img, conf_MVS_img
+        elif depth_type == 'mesh':
+            return pred_img, conf_img
+        elif depth_type == 'merge':
+            pred_img = torch.where(torch.logical_and(pred_img == float(0.), pred_MVS_img != float(0.)),
+                                   pred_MVS_img,
+                                   pred_img)
+            conf_img = torch.where(torch.logical_and(conf_img == float(0.), conf_MVS_img != float(0.)),
+                                   conf_MVS_img,
+                                   conf_img)
+
+            return pred_img, conf_img
+        else:
+            raise ValueError(f'depth type should be in original, mesh or merge but got: {depth_type}')
 
     @staticmethod
     def int_to_viewdir(i: int):
@@ -253,7 +254,7 @@ class FacescapeDataSet(torch.utils.data.Dataset):
                     for src_rgba_path, src_depth_path, src_mesh_depth_path in \
                             zip(src_rgba_paths, src_depth_paths, src_mesh_depth_paths):
                         src_rgb, src_alpha = self.read_rgba(src_rgba_path)
-                        src_depth, src_depth_std = self.read_depth(src_depth_path, src_mesh_depth_path)
+                        src_depth, src_depth_std = self.read_depth(src_depth_path, src_mesh_depth_path, depth_type=self.depth_type)
                         # src_depth = self.read_depth(src_depth_path)
                         # src_depth_std = self.read_depth(src_depth_std_path)
                         src_rgbs.append(src_rgb), src_alphas.append(src_alpha), src_depths.append(src_depth)

@@ -2,6 +2,7 @@
 Main script for training diner
 """
 
+from pytorch3d.ops.knn import knn_points
 from omegaconf import OmegaConf
 import sys
 from pathlib import Path
@@ -9,6 +10,7 @@ sys.path.append(str(Path(__file__).parents[1]))
 from src.data.pl_datamodule import PlDataModule
 from pytorch_lightning import Trainer
 from src.models.diner import DINER
+from src.models.novel import NOVEL
 from src.models.keypointnerf import KeypointNeRFLightningModule
 from src.models.ournerf import OurNeRFLightningModule
 from pytorch_lightning.loggers.tensorboard import TensorBoardLogger
@@ -42,7 +44,7 @@ def main():
         model = DINER(nerf_conf=conf.nerf, renderer_conf=conf.renderer, znear=datamodule.train_set.znear,
                               zfar=datamodule.train_set.zfar, **conf.optimizer_diner.kwargs)
     elif model_name == 'NOVEL':
-        model = DINER(nerf_conf=conf.nerf, renderer_conf=conf.renderer, znear=datamodule.train_set.znear,
+        model = NOVEL(nerf_conf=conf.nerf, renderer_conf=conf.renderer, znear=datamodule.train_set.znear,
                               zfar=datamodule.train_set.zfar, **conf.optimizer_diner.kwargs)
     else:
         raise ValueError(f'Model Name should be DINER or KeypointNeRF but got: {model_name}')
