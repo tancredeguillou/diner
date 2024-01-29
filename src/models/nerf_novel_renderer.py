@@ -298,6 +298,7 @@ class NeRFRendererDGS(torch.nn.Module):
         :return (SB, B, 3)
         """
         SB, B, _ = points.shape
+        _, vert_ids, _ = knn_points(points, target_vertices, K=1)
         closest_offsets = offsets[torch.arange(SB).unsqueeze(1), vert_ids.squeeze(), :] # (SB, B, 3)
         deformed_points = points + closest_offsets # (SB, B, 3)
         return deformed_points

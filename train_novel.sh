@@ -1,10 +1,10 @@
 #!/bin/bash
 
 #SBATCH -n 1
-#SBATCH --mem-per-cpu=7168
-#SBATCH -J train_NOVEL2
-#SBATCH -o outputs/train_NOVEL2.out
-#SBATCH -e outputs/train_NOVEL2.err
+#SBATCH --mem-per-cpu=8192
+#SBATCH -J train_NOVEL3
+#SBATCH -o outputs/train_NOVEL3.out
+#SBATCH -e outputs/train_NOVEL3.err
 #SBATCH -t 10-00
 #SBATCH --gpus=rtx_3090:1
 
