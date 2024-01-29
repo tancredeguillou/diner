@@ -298,46 +298,7 @@ class NeRFRendererDGS(torch.nn.Module):
         :return (SB, B, 3)
         """
         SB, B, _ = points.shape
-        #NV = offsets.shape[1]
-        
-        #r_points = points.repeat(1, 1, NV, 1)
-        #r_target_vertices = target_vertices.repeat(1, B, 1, 1)
-        #r_offsets = offsets.repeat(1, B, 1, 1)
-        
-        # print('r_points', points.shape, flush=True)
-        # print('r_target', target_vertices.shape, flush=True)
-        # print('r_offset', offset.shape, flush=True)
-        
-        # IDEA
-#         distances = torch.norm(target_vertices - points, dim=-1) # (SB, B, NV)
-#         print('distances', distances.shape, flush=True)
-        
-#         closest_vertex = torch.argmin(distances, dim=-1) # (SB, B)
-#         print('closest_vertex', closest_vertex.shape, flush=True)
-        
-#         #selected_vertices = vertices[torch.arange(B).unsqueeze(1), indices, :]
-#         closest_offsets = offset[torch.arange(SB).unsqueeze(1), closest_vertex, :] # (SB, B, 3)
-
-        #points_reshaped = points.reshape((SB * B, 3))
-        #vertices_reshaped = target_vertices.reshape((SB * NV, 3))
-
-        # Compute pairwise distances using cdist
-        #distances = torch.cdist(points_reshaped, vertices_reshaped)
-        _, vert_ids, _ = knn_points(points, target_vertices, K=1)
-        #print(vert_ids.shape, flush=True)
-        #raise ValueError()
-
-        # Find the index of the closest vertex for each point
-        # closest_vertex_indices = torch.argmin(distances, dim=1)
-
-        # Reshape the indices back to (SB, B)
-        # closest_vertex_indices = closest_vertex_indices.view(SB, B)
-
-        # Use the indices to gather the closest vertices
-        #closest_vertices = torch.gather(vertices, 1, vert_ids.unsqueeze(-1).expand(SB, B, 3))
-        
         closest_offsets = offsets[torch.arange(SB).unsqueeze(1), vert_ids.squeeze(), :] # (SB, B, 3)
-        
         deformed_points = points + closest_offsets # (SB, B, 3)
         return deformed_points
 
@@ -390,7 +351,7 @@ class NeRFRendererDGS(torch.nn.Module):
         for pnts, dirs in zip(split_points, split_viewdirs):
             deformed_points = self.deform_points(pnts, target_vertices, offsets)
             # raise ValueError()
-            val_all.append(model(pnts, viewdirs=dirs))
+            val_all.append(model(deformed_points, viewdirs=dirs))
         points = None
         viewdirs = None
 
