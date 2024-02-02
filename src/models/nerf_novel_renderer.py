@@ -7,7 +7,7 @@ import torch
 from torch.special import erf
 from pytorch3d.ops.knn import knn_points
 from dotmap import DotMap
-from src.util.torch_helpers import weighted_mean_n_std
+from src.util.torch_helpers import weighted_mean_n_std, index_depth, index_depth_std, index_normal
 
 
 class NeRFRendererDGS(torch.nn.Module):
@@ -36,6 +36,18 @@ class NeRFRendererDGS(torch.nn.Module):
 
         self.eval_batch_size = eval_batch_size
         self.white_bkgd = white_bkgd
+    
+    def deform_points(self, points, target_vertices, offsets):
+        """
+        Deform points from target space to observation space, using vertices offsets
+        :param points (SB, B, 3), target_vertices (SB, NV, 3), offsets (SB, NV, 3)
+        :return (SB, B, 3)
+        """
+        SB, B, _ = points.shape
+        _, vert_ids, _ = knn_points(points, target_vertices, K=1)
+        closest_offsets = offsets[torch.arange(SB).unsqueeze(1), vert_ids.squeeze(), :] # (SB, B, 3)
+        deformed_points = points + closest_offsets # (SB, B, 3)
+        return deformed_points
 
     def sample_coarse(self, rays, n_coarse=None):
         """
@@ -89,36 +101,33 @@ class NeRFRendererDGS(torch.nn.Module):
 
         assert n_samples >= n_gaussian
 
-        SB, NV, _, _ = model.poses.shape # 2, 2, 4, 4
+        SB, NV, _, _ = model.target_poses.shape # 2, 2, 4, 4 # TODO change this to 2, 1, 4, 4 with target.
         device = rays.device
         NR = rays.shape[1]
         z_samples = self.sample_coarse(rays, n_coarse=n_candidates)  # SB, NR, n_candidates
         step_size = (rays[..., -1] - rays[..., -2]) / n_candidates  # SB, NR
         xyz = rays[..., None, :3] + z_samples.unsqueeze(-1) * rays[..., None, 3:6] # SB, NR, NC, 3
-        # TODO new part
-        xyz = xyz.view(SB, NR * n_candidates, 3)
-        xyz = self.deform_points(xyz, target_vertices, offsets)
-        xyz = xyz.view(SB, NR, n_candidates, 3)
+        # TODO Stay in Target Space
+        # xyz = xyz.view(SB, NR * n_candidates, 3)
+        # xyz = self.deform_points(xyz, target_vertices, offsets)
+        # xyz = xyz.view(SB, NR, n_candidates, 3)
 
         # Transform query points into the camera spaces of the input views
-        # TODO Here there is some changes
-        # I think the first xyz (above) should be deformed directly ! Because these are the first points in
-        # world space.
         xyz = xyz.reshape(SB, -1, 3).unsqueeze(1).expand(-1, NV, -1, -1)  # (SB, NV, B, 3)
-        xyz_rot = torch.matmul(model.poses[:, :, :3, :3], xyz.transpose(-2, -1)).transpose(-2, -1)
-        xyz = xyz_rot + model.poses[:, :, :3, -1].unsqueeze(-2)  # (SB, NV, B, 3)
+        xyz_rot = torch.matmul(model.target_poses[:, :, :3, :3], xyz.transpose(-2, -1)).transpose(-2, -1)
+        xyz = xyz_rot + model.target_poses[:, :, :3, -1].unsqueeze(-2)  # (SB, NV, B, 3)
         raydirs = rays[..., 3:6].unsqueeze(1).expand(SB, NV, NR, 3)  # SB, NV, NR, 3
-        raydirs_cam = (model.poses[:, :, :3, :3] @ raydirs.transpose(-2, -1)).transpose(-2, -1)  # SB, NV, NR, 3
+        raydirs_cam = (model.target_poses[:, :, :3, :3] @ raydirs.transpose(-2, -1)).transpose(-2, -1)  # SB, NV, NR, 3
         pointdirs_cam = raydirs_cam.repeat_interleave(n_candidates, dim=-2)  # (SB, NV, B, 3)
 
         # sample depth and normal maps
         uv = xyz[..., :2] / xyz[..., 2:]  # (SB, NV, B, 2)
-        uv *= model.focal.unsqueeze(-2)
-        uv += model.c.unsqueeze(-2)
-        uv = uv / model.image_shape * 2 - 1  # assumes outer edges of pixels correspond to uv coordinates -1 / 1
-        ref_depth = model.encoder.index_depth(uv)  # SB, NV, 1, B
-        ref_depth_std = model.encoder.index_depth_std(uv)  # SB, NV, 1, B
-        ref_normal = model.encoder.index_normal(uv)  # SB, NV, 3, B
+        uv *= model.target_focal.unsqueeze(-2)
+        uv += model.target_c.unsqueeze(-2)
+        uv = uv / model.target_image_shape * 2 - 1  # assumes outer edges of pixels correspond to uv coordinates -1 / 1
+        ref_depth = index_depth(model.target_depth, uv)  # SB, NV, 1, B
+        ref_depth_std = index_depth_std(model.target_depth_std, uv)  # SB, NV, 1, B
+        ref_normal = index_normal(model.target_normal, uv)  # SB, NV, 3, B
         ref_z = xyz[..., 2:].permute(0, 1, 3, 2)  # SB, NV, 1, B
         step_size = step_size.repeat_interleave(n_candidates, dim=1).view(SB, 1, 1, NR * n_candidates)
         step_size = step_size.expand_as(ref_depth)  # SB, NV, 1, B
@@ -290,18 +299,6 @@ class NeRFRendererDGS(torch.nn.Module):
         # plt.show()
 
         return z_samples_depth
-    
-    def deform_points(self, points, target_vertices, offsets):
-        """
-        Deform points from target space to observation space, using vertices offsets
-        :param points (SB, B, 3), target_vertices (SB, NV, 3), offsets (SB, NV, 3)
-        :return (SB, B, 3)
-        """
-        SB, B, _ = points.shape
-        _, vert_ids, _ = knn_points(points, target_vertices, K=1)
-        closest_offsets = offsets[torch.arange(SB).unsqueeze(1), vert_ids.squeeze(), :] # (SB, B, 3)
-        deformed_points = points + closest_offsets # (SB, B, 3)
-        return deformed_points
 
     def composite(self, model, rays, z_samp, target_vertices, offsets):
         """

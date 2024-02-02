@@ -1,7 +1,7 @@
 logger:
   kwargs:
     save_dir: "outputs/facescape"
-    version: "NOVEL_3"
+    version: "NOVEL_TARGET"
 
 data:
   train:
@@ -34,7 +34,7 @@ data:
         num_workers: 4
 
 nerf:
-  module: src.models.pixelnerf.PixelNeRF
+  module: src.models.novel_pixelnerf.PixelNeRF
   kwargs:
     encoder_conf:
       module: src.models.image_encoder.SpatialEncoder

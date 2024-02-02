@@ -5,6 +5,7 @@ import imageio
 from torch import Tensor
 from typing import Optional
 from torch.nn.functional import pad, avg_pool2d, grid_sample as tgrid_sample
+import torch.nn.functional as F
 from torchvision.transforms.functional import resize
 
 def dict_2_device(d: dict, device):
@@ -157,6 +158,84 @@ def grid_sample(input: Tensor,
             scale_factor = img_size / (img_size + 2 * pad_size)
         grid = grid * scale_factor.view(1, 1, 1, 2)
         return tgrid_sample(input_padded, grid, mode=mode, padding_mode=exp_padding_mode, align_corners=align_corners)
+
+    
+def index_depth_std(depths_std, uv):
+    """
+    Get pixel-aligned depth standard deviations at 2D image coordinates (copied from self.index())
+    :param uv (SB, NV, N, 2) image points (x,y)
+    :return (SB, NV, 1, N)
+    """
+    assert uv.shape[:2] == depths_std.shape[:2]
+    SB, NV, N, _ = uv.shape
+    N_ = SB * NV
+    uv = uv.view(N_, N, 2)
+    depths_std = depths_std.view(N_, *depths_std.shape[-3:])
+
+    uv = uv.unsqueeze(2)  # (B, N, 1, 2)
+
+    samples = grid_sample(
+        depths_std,
+        uv,
+        align_corners=False,
+        mode="nearest",
+        padding_mode="exponential",
+        pad_double_width=12,
+        pad_size=100,
+        exp_padding_mode="zeros"
+    )
+
+    samples = samples[:, :, :, 0]  # (N_, C, N)
+    samples = samples.view(SB, NV, *samples.shape[-2:])  # (SB, NV, C, N)
+    return samples
+
+def index_depth(depths, uv):
+    """
+    Get pixel-aligned depths at 2D image coordinates (copied from self.index())
+    :param uv (SB, NV, N, 2) image points (x,y)
+    :return (SB, NV, 1, N)
+    """
+    assert uv.shape[:2] == depths.shape[:2]
+    SB, NV, N, _ = uv.shape
+    N_ = SB * NV
+    uv = uv.view(N_, N, 2)
+    depths = depths.view(N_, *depths.shape[-3:])
+
+    uv = uv.unsqueeze(2)  # (B, N, 1, 2)
+    samples = F.grid_sample(
+        depths,
+        uv,
+        align_corners=False,
+        mode="nearest",
+        padding_mode="border",
+    )
+    samples = samples[:, :, :, 0]  # (N_, C, N)
+    samples = samples.view(SB, NV, *samples.shape[-2:])  # (SB, NV, C, N)
+    return samples
+
+def index_normal(normals, uv):
+    """
+    Get pixel-aligned normals at 2D image coordinates (copied from self.index())
+    :param uv (SB, NV, N, 2) image points (x,y)
+    :return (SB, NV, 1, N)
+    """
+    assert uv.shape[:2] == normals.shape[:2]
+    SB, NV, N, _ = uv.shape
+    N_ = SB * NV
+    uv = uv.view(N_, N, 2)
+    normals = normals.view(N_, *normals.shape[-3:])
+
+    uv = uv.unsqueeze(2)  # (B, N, 1, 2)
+    samples = F.grid_sample(
+        normals,
+        uv,
+        align_corners=False,
+        mode="nearest",
+        padding_mode="zeros",
+    )
+    samples = samples[:, :, :, 0]  # (N_, C, N)
+    samples = samples.view(SB, NV, *samples.shape[-2:])  # (SB, NV, C, N)
+    return samples
 
 
 def masked_downsampling(x, mask, factor: int, mode="average", bg_color=0.):

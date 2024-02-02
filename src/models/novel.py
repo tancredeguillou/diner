@@ -68,6 +68,12 @@ class NOVEL(LightningModule):
                          depths_std=batch["src_depth_stds"],
                          extrinsics=batch["src_extrinsics"],
                          intrinsics=batch["src_intrinsics"])
+        
+        self.nerf.encode_target(target_image=batch["target_rgb"].unsqueeze(1),
+                         target_depth=batch["target_depth"].unsqueeze(1),
+                         target_depth_std=batch["target_depth_std"].unsqueeze(1),
+                         target_extrinsic=batch["target_extrinsics"].unsqueeze(1),
+                         target_intrinsic=batch["target_intrinsics"].unsqueeze(1))
 
     def predict_imgs_from_batch(self, batch, return_depth=False):
         SB, _, H, W = batch["target_rgb"].shape

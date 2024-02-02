@@ -63,36 +63,36 @@ class FacescapeDataSet(torch.utils.data.Dataset):
         return rgb, a
 
     @staticmethod
-    def read_depth(p: Path, mp: Path):
+    def read_depth(mesh_path: Path, transmvsnet_path: Path = None):
         UINT16_MAX = 65535
         SCALE_FACTOR = 1e-4
         
-        # unprocessed_depth_img = Image.open(p)
-        unprocessed_mesh_depth_img = Image.open(mp)
+        unprocessed_mesh_depth_img = Image.open(mesh_path)
         
         pred_img = pil_to_tensor(unprocessed_mesh_depth_img).float() * SCALE_FACTOR
         conf_img = torch.where(pred_img == float(0.),
                                float(0.),
                                float(0.8))
         
-#         width = unprocessed_depth_img.width // 3
+        if transmvsnet_path is not None:
+            unprocessed_depth_img = Image.open(transmvsnet_path)
+            
+            width = unprocessed_depth_img.width // 3
+            gt_pil = unprocessed_depth_img.crop((0, 0, width, unprocessed_depth_img.height))
+            pred_pil = unprocessed_depth_img.crop((width, 0, 2 * width, unprocessed_depth_img.height))
+            conf_pil = unprocessed_depth_img.crop((2 * width, 0,
+                                                   unprocessed_depth_img.width,
+                                                   unprocessed_depth_img.height))
+            pred_MVS_img = pil_to_tensor(pred_pil).float() * SCALE_FACTOR
+            conf_MVS_img = pil_to_tensor(conf_pil).float() * SCALE_FACTOR
 
-#         gt_pil = unprocessed_depth_img.crop((0, 0, width, unprocessed_depth_img.height))
-#         pred_pil = unprocessed_depth_img.crop((width, 0, 2 * width, unprocessed_depth_img.height))
-#         conf_pil = unprocessed_depth_img.crop((2 * width, 0,
-#                                                unprocessed_depth_img.width,
-#                                                unprocessed_depth_img.height))
-        
-#         pred_MVS_img = pil_to_tensor(pred_pil).float() * SCALE_FACTOR
-#         conf_MVS_img = pil_to_tensor(conf_pil).float() * SCALE_FACTOR
-        
-#         # Final Step, Union of both images
-#         pred_img = torch.where(torch.logical_and(pred_img == float(0.), pred_MVS_img != float(0.)),
-#                                pred_MVS_img,
-#                                pred_img)
-#         conf_img = torch.where(torch.logical_and(conf_img == float(0.), conf_MVS_img != float(0.)),
-#                                conf_MVS_img,
-#                                conf_img)
+            # Final Step, Union of both images
+            pred_img = torch.where(torch.logical_and(pred_img == float(0.), pred_MVS_img != float(0.)),
+                                   pred_MVS_img,
+                                   pred_img)
+            conf_img = torch.where(torch.logical_and(conf_img == float(0.), conf_MVS_img != float(0.)),
+                                   conf_MVS_img,
+                                   conf_img)
         
         return pred_img, conf_img
 
@@ -171,8 +171,13 @@ class FacescapeDataSet(torch.utils.data.Dataset):
                 "/cluster/home/tguillou/novel_depths_mesh",
                 '_'.join(str(src_depth_path).split('/'))
             ) for src_depth_path in src_mesh_depth_paths]
-
+            target_mesh_depth_path = os.path.join(
+                "/cluster/home/tguillou/target_depths_mesh",
+                '_'.join(str(sample_path).split('/')[-3:] + [self.DEPTH_MESH_FNAME])
+            )
+                
             target_rgb, target_alpha = self.read_rgba(target_rgba_path)
+            target_depth, target_depth_std = self.read_depth(target_mesh_depth_path)
             image_shape = target_rgb.shape[1:]
 
             src_rgbs = list()
@@ -182,9 +187,7 @@ class FacescapeDataSet(torch.utils.data.Dataset):
             for src_rgba_path, src_depth_path, src_mesh_depth_path in \
                     zip(src_rgba_paths, src_depth_paths, src_mesh_depth_paths):
                 src_rgb, src_alpha = self.read_rgba(src_rgba_path)
-                src_depth, src_depth_std = self.read_depth(src_depth_path, src_mesh_depth_path)
-                # src_depth = self.read_depth(src_depth_path)
-                # src_depth_std = self.read_depth(src_depth_std_path)
+                src_depth, src_depth_std = self.read_depth(src_mesh_depth_path) # , transmvsnet_path=src_depth_path)
                 src_rgbs.append(src_rgb), src_alphas.append(src_alpha), src_depths.append(src_depth)
                 src_depth_stds.append(src_depth_std)
 
@@ -222,6 +225,8 @@ class FacescapeDataSet(torch.utils.data.Dataset):
             offset_target_to_source = ref_vertices - target_vertices
 
             sample = dict(target_rgb=target_rgb,
+                          target_depth=target_depth,
+                          target_depth_std=target_depth_std,
                           target_alpha=target_alpha,
                           target_extrinsics=target_extrinsics,
                           target_intrinsics=target_intrinsics,
