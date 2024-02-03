@@ -7,6 +7,7 @@ import torch
 from src.util.import_helper import import_obj
 from src.models.positional_encoding import PositionalEncoding
 from src.util.depth2normal import depth2normal
+from src.util.torch_helpers import index_depth
 
 
 class PixelNeRF(torch.nn.Module):
@@ -16,7 +17,7 @@ class PixelNeRF(torch.nn.Module):
         self.depthcode = PositionalEncoding(**poscode_conf.kwargs, d_in=1)
         self.encoder = import_obj(encoder_conf.module)(**encoder_conf.kwargs)
         self.d_in = self.poscode.d_out + self.depthcode.d_out + 3
-        self.d_latent = self.encoder.latent_size
+        self.d_latent = self.encoder.latent_size + 1
         self.d_out = 4
         self.mlp_fine = import_obj(mlp_fine_conf.module)(**mlp_fine_conf.kwargs,
                                                          d_latent=self.d_latent,
@@ -81,7 +82,7 @@ class PixelNeRF(torch.nn.Module):
 
         return
 
-    def forward(self, xyz, viewdirs):
+    def forward(self, xyz, tgt_xyz, viewdirs):
         """
         Predict (r, g, b, sigma) at world space points xyz.
         Please call encode first!
@@ -154,7 +155,19 @@ class PixelNeRF(torch.nn.Module):
         # ax.set_zlabel("Z")
         # plt.show()
 
-        mlp_input = torch.cat((latent, z_feature, depth_feature), dim=-1)  # (SB, NV, B, C_in)
+        # (SB, NV, B, 1) - batch, nviews, we get B inputs, for each input get the depth value
+        tgt_xyz = tgt_xyz.unsqueeze(1)  # (SB, 1, B, 3)
+        tgt_xyz_rot = torch.matmul(self.target_poses[:, :, :3, :3], tgt_xyz.transpose(-2, -1)).transpose(-2, -1)
+        tgt_xyz = tgt_xyz_rot + self.target_poses[:, :, :3, -1].unsqueeze(-2)  # (SB, NV, B, 3)
+        tgt_uv = tgt_xyz[..., :2] / tgt_xyz[..., 2:]  # (SB, NV, B, 2)
+        tgt_uv *= self.target_focal.unsqueeze(-2)
+        tgt_uv += self.target_c.unsqueeze(-2)
+        tgt_uv = tgt_uv / self.target_image_shape * 2 - 1  # assumes outer edges of pixels correspond to uv coordinates -1 / 1
+        tgt_depth = index_depth(self.target_depth, tgt_uv)  # SB, NV, 1, B
+        tgt_depth = tgt_depth.transpose(-1, -2)
+        tgt_depth = tgt_depth.expand(-1, NV, -1, -1)
+        
+        mlp_input = torch.cat((latent, tgt_depth, z_feature, depth_feature), dim=-1)  # (SB, NV, B, C_in)
 
         # Run main NeRF network
         mlp_output = self.mlp_fine(

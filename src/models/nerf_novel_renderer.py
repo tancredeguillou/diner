@@ -95,6 +95,97 @@ class NeRFRendererDGS(torch.nn.Module):
 
         n_gaussian = n_gaussian if n_gaussian is not None else self.n_gaussian
 
+        assert n_samples >= n_gaussian
+
+        SB, NV, _, _ = model.poses.shape # 2, 2, 4, 4 # TODO change this to 2, 1, 4, 4 with target.
+        device = rays.device
+        NR = rays.shape[1]
+        z_samples = self.sample_coarse(rays, n_coarse=n_candidates)  # SB, NR, n_candidates
+        step_size = (rays[..., -1] - rays[..., -2]) / n_candidates  # SB, NR
+        xyz = rays[..., None, :3] + z_samples.unsqueeze(-1) * rays[..., None, 3:6] # SB, NR, NC, 3
+        xyz = xyz.view(SB, NR * n_candidates, 3)
+        xyz = self.deform_points(xyz, target_vertices, offsets)
+        xyz = xyz.view(SB, NR, n_candidates, 3)
+
+        # Transform query points into the camera spaces of the input views
+        xyz = xyz.reshape(SB, -1, 3).unsqueeze(1).expand(-1, NV, -1, -1)  # (SB, NV, B, 3)
+        xyz_rot = torch.matmul(model.poses[:, :, :3, :3], xyz.transpose(-2, -1)).transpose(-2, -1)
+        xyz = xyz_rot + model.poses[:, :, :3, -1].unsqueeze(-2)  # (SB, NV, B, 3)
+        raydirs = rays[..., 3:6].unsqueeze(1).expand(SB, NV, NR, 3)  # SB, NV, NR, 3
+        raydirs_cam = (model.poses[:, :, :3, :3] @ raydirs.transpose(-2, -1)).transpose(-2, -1)  # SB, NV, NR, 3
+        pointdirs_cam = raydirs_cam.repeat_interleave(n_candidates, dim=-2)  # (SB, NV, B, 3)
+
+        # sample depth and normal maps
+        uv = xyz[..., :2] / xyz[..., 2:]  # (SB, NV, B, 2)
+        uv *= model.focal.unsqueeze(-2)
+        uv += model.c.unsqueeze(-2)
+        uv = uv / model.image_shape * 2 - 1  # assumes outer edges of pixels correspond to uv coordinates -1 / 1
+        ref_depth = model.encoder.index_depth(uv)  # SB, NV, 1, B
+        ref_depth_std = model.encoder.index_depth_std(uv)  # SB, NV, 1, B
+        ref_normal = model.encoder.index_normal(uv)  # SB, NV, 3, B
+        ref_z = xyz[..., 2:].permute(0, 1, 3, 2)  # SB, NV, 1, B
+        step_size = step_size.repeat_interleave(n_candidates, dim=1).view(SB, 1, 1, NR * n_candidates)
+        step_size = step_size.expand_as(ref_depth)  # SB, NV, 1, B
+
+        # determining sample point likelihoods
+        cosdist_ray_normal = (pointdirs_cam.transpose(-2, -1) * ref_normal).sum(dim=-2, keepdim=True)  # SB, NV, 1, B
+        pt_likelihood = torch.zeros_like(ref_depth)  # SB, NV, 1, B
+        cosdist_ray_normal_mask = cosdist_ray_normal <= 0
+        depth_dist_mask = (ref_depth - ref_z).abs() < depth_diff_max
+        bg_mask = ref_depth_std != 0
+        mask = bg_mask & depth_dist_mask & cosdist_ray_normal_mask  # SB, NV, 1, B
+        pt_likelihood[mask] = 0.5 * (
+                erf((ref_z[mask] + step_size[mask] / 2 - ref_depth[mask]) / (ref_depth_std[mask] * np.sqrt(2))) -
+                erf((ref_z[mask] - step_size[mask] / 2 - ref_depth[mask]) / (ref_depth_std[mask] * np.sqrt(2)))
+        ).abs()
+        pt_likelihood = torch.max(pt_likelihood, dim=1).values.squeeze(1)  # SB, B
+        pt_likelihood = pt_likelihood.reshape(*rays.shape[:2], -1)  # SB, N_rays, N_pointsperray
+        opaque_pt_likelihood = pt_likelihood.clone()
+        opaque_pt_likelihood[..., 1:] *= torch.cumprod(1. - pt_likelihood, dim=-1)[..., :-1]
+
+        # determining sampling points
+        selected_pts_idcs = pt_likelihood.argsort(dim=-1, descending=True)[..., :n_samples]  # SB, N_rays, n_depthsmpls
+        SB_helper = torch.arange(SB).view(-1, 1, 1).expand_as(selected_pts_idcs)
+        ray_helper = torch.arange(NR).view(1, -1, 1).expand_as(selected_pts_idcs)
+        selected_pts_likelihood = pt_likelihood[SB_helper, ray_helper, selected_pts_idcs]  # SB, N_rays, n_depthsmpls
+        zero_liklhd_mask = selected_pts_likelihood == 0.  # pts with 0 likelihood: z_sample=0 for filling up later
+        z_samples_depth = z_samples[SB_helper, ray_helper, selected_pts_idcs]  # SB, N_rays, N_depthsamples
+        z_samples_depth[zero_liklhd_mask] = 0  # no samples where no depth
+
+        # gaussian sampling of points
+        if n_gaussian > 0:
+            ray_mask = torch.any(opaque_pt_likelihood != 0, dim=-1)  # SB, NR
+            ray_dmean, ray_dstd = weighted_mean_n_std(z_samples[ray_mask],  # B, 1
+                                                      opaque_pt_likelihood[ray_mask],
+                                                      dim=-1, keepdims=True)
+            gauss_samples = torch.zeros(*z_samples.shape[:-1], n_gaussian, device=z_samples.device,
+                                        dtype=z_samples.dtype)
+            gauss_samples[ray_mask] = torch.randn_like(gauss_samples[ray_mask]) * ray_dstd + ray_dmean
+            # gauss samples: SB, NR, n_gaussian
+            z_samples_depth[..., -n_gaussian:] = gauss_samples
+
+        return z_samples_depth
+
+    @torch.no_grad()
+    def sample_depthguided_target(self, rays, model, n_samples, n_candidates, target_vertices, offsets,
+                           depth_diff_max=0.05, n_gaussian=None):
+        """
+        Ray sampling guided by reference depth maps
+        :param rays: ray [origins (3), directions (3), near (1), far (1)] (batch_size, n_rays, 8)
+        :param model: nerf model (instance of src.models.pixelnerf.PixelNeRF)
+        :param n_samples: total number of samples per ray that NeRF is evaluated on
+        :param n_candidates: number of candidate samples. Are shortlisted according to
+                             surface likelihoods given by depth-predictions
+        :param: depth_diff_max: maximal difference in sample point depth and predicted depth
+                                if difference exceeds that value -> candidate is discarded
+        :param: n_gaussian: number of gaussian samples drawn according to occlusion aware surface
+                            likelihoods (replace shortlisted samples with smallest surface likelihoods)
+
+        :return (batch_size, n_rays, n_samples) ... z values of the samples
+        """
+
+        n_gaussian = n_gaussian if n_gaussian is not None else self.n_gaussian
+
         # # reducing ray nr (for debugging only!)
         # rays = rays[:, :10].clone()
         # print("WARNING: REDUCING RAY COUNT")
@@ -349,7 +440,7 @@ class NeRFRendererDGS(torch.nn.Module):
         for pnts, dirs in zip(split_points, split_viewdirs):
             deformed_points = self.deform_points(pnts, target_vertices, offsets)
             # raise ValueError()
-            val_all.append(model(deformed_points, viewdirs=dirs))
+            val_all.append(model(deformed_points, pnts, viewdirs=dirs))
         points = None
         viewdirs = None
 

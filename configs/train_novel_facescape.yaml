@@ -1,7 +1,7 @@
 logger:
   kwargs:
     save_dir: "outputs/facescape"
-    version: "NOVEL_TARGET"
+    version: "NOVEL_MLP"
 
 data:
   train:
