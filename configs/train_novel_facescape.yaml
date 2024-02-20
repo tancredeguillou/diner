@@ -1,14 +1,14 @@
 logger:
   kwargs:
     save_dir: "outputs/facescape"
-    version: "NOVEL_MLP"
+    version: "NCO_tgt"
 
 data:
   train:
     dataset:
       module: src.data.facescape_novel.FacescapeDataSet
       kwargs:
-        root: /cluster/scratch/tguillou/facescape
+        root: /cluster/scratch/tguillou/facescape_color_calibrated
         range_vert: 30
         range_hor: 45
         slide_range: 40
@@ -23,7 +23,7 @@ data:
     dataset:
       module: src.data.facescape_novel.FacescapeDataSet
       kwargs:
-        root: /cluster/scratch/tguillou/facescape
+        root: /cluster/scratch/tguillou/facescape_color_calibrated
         range_vert: 30
         range_hor: 45
         slide_range: 40

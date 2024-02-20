@@ -23,7 +23,7 @@ class FacescapeDataSet(torch.utils.data.Dataset):
     DEPTH_FNAME = "depth_gt_pred_conf.png"
     DEPTH_MESH_FNAME = "depth_mesh.png"
 
-    def __init__(self, model, root: Path, stage, range_hor=45, range_vert=30, slide_range=40, slide_step=20, depth_fname=None):
+    def __init__(self, model, data_type, root: Path, stage, range_hor=45, range_vert=30, slide_range=40, slide_step=20, depth_fname=None):
         """
         Capstudio Data Loading Class.
         Camera extrinsics follow OPENCV convention (cams look in positive z direction, y points downwards)
@@ -34,6 +34,25 @@ class FacescapeDataSet(torch.utils.data.Dataset):
         """
         super().__init__()
         self.model = model
+        self.data_type = data_type
+        closed_eyes = ["18"]
+        open_mouth = ["03", "13", "16"]
+
+        if data_type == "NOO":
+            unwanted_ref_expr = closed_eyes
+            unwanted_tgt_expr = closed_eyes + open_mouth
+        elif data_type == "NCO":
+            unwanted_ref_expr = closed_eyes
+            unwanted_tgt_expr = open_mouth
+        elif data_type == "NOC":
+            unwanted_ref_expr = closed_eyes + open_mouth
+            unwanted_tgt_expr = closed_eyes + open_mouth
+        elif data_type == "NCC":
+            unwanted_ref_expr = closed_eyes + open_mouth
+            unwanted_tgt_expr = open_mouth
+        self.unwanted_ref_expr = unwanted_ref_expr
+        self.unwanted_tgt_expr = unwanted_tgt_expr
+        
         assert os.path.exists(root)
         self.data_dir = Path(root)
         self.stage = stage
@@ -130,8 +149,15 @@ class FacescapeDataSet(torch.utils.data.Dataset):
             meta = self.metas[idx]
 
             # Step 1: Get a ref expression and a target expression
-            ref_expression = self.rnd.choice(meta["ref_expressions"])
-            target_expression = self.rnd.choice(meta["target_expressions"])
+            while True:
+                ref_expression = self.rnd.choice(meta["ref_expressions"])
+                if ref_expression["expression"] not in self.unwanted_ref_expr:
+                    break
+                
+            while True:
+                target_expression = self.rnd.choice(meta["target_expressions"])
+                if target_expression["expression"] not in self.unwanted_tgt_expr:
+                    break
 
             # Step 2: Get the ref ids and target ids
             target_ids = np.array(target_expression["targets"])

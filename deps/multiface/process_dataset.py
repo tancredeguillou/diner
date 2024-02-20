@@ -8,6 +8,8 @@ import matplotlib.pyplot as plt
 from PIL import Image
 from argparse import ArgumentParser
 
+os.environ['PYOPENGL_PLATFORM'] = 'egl'
+
 
 def load_krt(path):
     cameras = {}

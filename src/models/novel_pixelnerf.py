@@ -82,7 +82,7 @@ class PixelNeRF(torch.nn.Module):
 
         return
 
-    def forward(self, xyz, tgt_xyz, viewdirs):
+    def forward(self, xyz, tgt_xyz, viewdirs): # tgt_xyz
         """
         Predict (r, g, b, sigma) at world space points xyz.
         Please call encode first!
@@ -167,7 +167,7 @@ class PixelNeRF(torch.nn.Module):
         tgt_depth = tgt_depth.transpose(-1, -2)
         tgt_depth = tgt_depth.expand(-1, NV, -1, -1)
         
-        mlp_input = torch.cat((latent, tgt_depth, z_feature, depth_feature), dim=-1)  # (SB, NV, B, C_in)
+        mlp_input = torch.cat((latent, tgt_depth, z_feature, depth_feature), dim=-1)  # (SB, NV, B, C_in) # tgt_depth, positionned after latent
 
         # Run main NeRF network
         mlp_output = self.mlp_fine(

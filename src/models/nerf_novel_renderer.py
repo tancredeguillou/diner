@@ -441,6 +441,7 @@ class NeRFRendererDGS(torch.nn.Module):
             deformed_points = self.deform_points(pnts, target_vertices, offsets)
             # raise ValueError()
             val_all.append(model(deformed_points, pnts, viewdirs=dirs))
+            # val_all.append(model(deformed_points, viewdirs=dirs))
         points = None
         viewdirs = None
 
@@ -521,8 +522,7 @@ class NeRFRendererDGS(torch.nn.Module):
         """
         assert len(rays.shape) == 3
 
-        # TODO Needs changing
-        z_depthguided = self.sample_depthguided(rays, model,
+        z_depthguided = self.sample_depthguided_target(rays, model,
                                                 n_samples=self.n_samples,
                                                 n_candidates=self.n_depth_candidates,
                                                 target_vertices=target_vertices,

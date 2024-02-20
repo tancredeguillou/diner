@@ -172,7 +172,7 @@ def main(args):
     download_config = json.load(f)
     f.close()
 
-    download_path = args.dest
+    download_path = '/cluster/scratch/tguillou/diner_multiface'#args.dest
 
     entity = download_config["entity"]
     download_img = download_config["image"]

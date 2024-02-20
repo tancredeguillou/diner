@@ -5,7 +5,7 @@ from src.util.import_helper import import_obj
 
 
 class PlDataModule(pl.LightningDataModule):
-    def __init__(self, train_config, val_config, model):
+    def __init__(self, train_config, val_config, model, data_type):
         """
         Pytorch Lightning Data Module Wrapper for datasets
         :param train_config:
@@ -15,6 +15,7 @@ class PlDataModule(pl.LightningDataModule):
         self.train_config = train_config
         self.val_config = val_config
         self.model = model
+        self.data_type = data_type
 
         self.train_set = None
         self.val_set = None
@@ -25,11 +26,11 @@ class PlDataModule(pl.LightningDataModule):
         # obtaining scan lists
         if stage == "train" or stage is None:
             dset_class = import_obj(self.train_config.dataset.module)
-            self.train_set = dset_class(self.model, **self.train_config.dataset.kwargs, stage="train")
+            self.train_set = dset_class(self.model, self.data_type, **self.train_config.dataset.kwargs, stage="train")
 
         if stage == "val" or stage is None:
             dset_class = import_obj(self.val_config.dataset.module)
-            self.val_set = dset_class(self.model, **self.val_config.dataset.kwargs, stage="val")
+            self.val_set = dset_class(self.model, self.data_type, **self.val_config.dataset.kwargs, stage="val")
 
     def train_dataloader(self):
         return DataLoader(self.train_set, **self.train_config.dataloader.kwargs)
