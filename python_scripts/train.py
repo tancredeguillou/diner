@@ -10,7 +10,7 @@ sys.path.append(str(Path(__file__).parents[1]))
 from src.data.pl_datamodule import PlDataModule
 from pytorch_lightning import Trainer
 from src.models.diner import DINER
-from src.models.novel import NOVEL
+from src.models.novel.novel import NOVEL
 from src.models.keypointnerf import KeypointNeRFLightningModule
 from src.models.ournerf import OurNeRFLightningModule
 from pytorch_lightning.loggers.tensorboard import TensorBoardLogger
@@ -22,7 +22,9 @@ from pytorch_lightning.callbacks.progress import TQDMProgressBar
 def main():
     config_path = sys.argv[1]
     model_name = sys.argv[2]
-    data_type = sys.argv[3]
+    data_type = None
+    if len(sys.argv) == 4:
+        data_type = sys.argv[3]
     if model_name not in ['DINER', 'KeypointNeRF', 'NOVEL']:
         raise ValueError(f'Model Name should be DINER or KeypointNeRF but got: {model_name}')
     
@@ -40,7 +42,7 @@ def main():
         model = KeypointNeRFLightningModule(conf.keypoint_nerf, znear=datamodule.train_set.znear,
                               zfar=datamodule.train_set.zfar, **conf.optimizer_keypointnerf.kwargs)
     elif model_name == 'NOVEL':
-        model = NOVEL(nerf_conf=conf.nerf, renderer_conf=conf.renderer, znear=datamodule.train_set.znear,
+        model = NOVEL(nerf_conf=conf.nerf, renderer_conf=conf.renderer, regressor_conf=conf.regressor, znear=datamodule.train_set.znear,
                               zfar=datamodule.train_set.zfar, **conf.optimizer_diner.kwargs)
     else:
         raise ValueError(f'Model Name should be DINER or KeypointNeRF but got: {model_name}')

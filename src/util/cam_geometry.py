@@ -17,23 +17,23 @@ def project_to_relative_coordinates(points_abs, extrinsics, intrinsics):
     """
     # Homogeneous coordinates for the input points
     points_homogeneous = np.hstack((points_abs, np.ones((points_abs.shape[0], 1))))
-    print(points_homogeneous.shape)
+    #print(points_homogeneous.shape)
 
     # Apply extrinsics to get points in camera coordinates
     points_cam = np.dot(points_homogeneous, extrinsics.T)
-    print(points_cam.shape)
+    #print(points_cam.shape)
 
     # Apply intrinsics to get points in relative coordinates
     points_rel_homogeneous = np.dot(points_cam, intrinsics.T)
-    print(points_rel_homogeneous.shape)
+    #print(points_rel_homogeneous.shape)
 
     # Normalize by the last column to get homogeneous coordinates
     points_rel_homogeneous /= points_rel_homogeneous[:, 2:3]
-    print(points_rel_homogeneous.shape)
+    #print(points_rel_homogeneous.shape)
 
     # Extract the relative coordinates
     points_rel = points_rel_homogeneous[:, :2]
-    print(points_rel.shape)
+    #print(points_rel.shape)
 
     return points_rel
 

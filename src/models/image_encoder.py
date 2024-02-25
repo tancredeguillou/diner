@@ -289,6 +289,7 @@ class SpatialEncoder(nn.Module):
             )
         self.latent = torch.cat(latents, dim=1)
         self.latent = self.latent.view(SB, NV, -1, *self.latent.shape[-2:])
+        # print('latent size', self.latent.shape, flush=True)
 
     @classmethod
     def from_conf(cls, conf):

@@ -23,7 +23,7 @@ class MultiFaceDataset(torch.utils.data.Dataset):
     znear = 0.5
     zfar = 1.5
 
-    def __init__(self, root: Path, stage, range_hor=45, range_vert=30, slide_range=0, slide_step=20.,
+    def __init__(self, model, root: Path, stage, range_hor=45, range_vert=30, slide_range=0, slide_step=20.,
                  downsample=8, split_config=Path("assets/data_splits/multiface/tiny_subset.json"),
                  depth_suffix=".png", depth_std_suffix=None,
                  subject_filter=None, sequence_filter=None, target_filter=None,
@@ -39,6 +39,7 @@ class MultiFaceDataset(torch.utils.data.Dataset):
         """
         super().__init__()
         assert os.path.exists(root)
+        self.model = model
         self.data_dir = Path(root)
         self.stage = stage
         self.range_hor = range_hor  # inactive
@@ -255,10 +256,10 @@ class MultiFaceDataset(torch.utils.data.Dataset):
         return frame, subject
 
     def imgpath_to_dpath(self, p):
-        return p.parents[3] / "depths" / p.relative_to(p.parents[2]).parent / (p.stem + self.depth_suffix)
+        return p.parents[3] / "depths" / p.relative_to(p.parents[2]).parent / (p.stem + '.png') #(p.stem + self.depth_suffix)
 
     def imgpath_to_dstdpath(self, p):
-        return p.parents[3] / "depths" / p.relative_to(p.parents[2]).parent / (p.stem + self.depth_std_suffix)
+        return p.parents[3] / "depths" / p.relative_to(p.parents[2]).parent / (p.stem + '.png') #(p.stem + self.depth_std_suffix)
 
     @staticmethod
     def imgpath_to_apath(p):
@@ -270,7 +271,7 @@ class MultiFaceDataset(torch.utils.data.Dataset):
                 meta = self.metas[idx]
 
                 # obtaining source view idcs
-                source_ids = meta["ref_ids"]
+                source_ids = meta["ref_ids"][2:]
                 target_id = meta["target_id"]
 
                 scan_path = Path(meta["scan_path"])

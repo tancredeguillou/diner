@@ -3,9 +3,9 @@ data:
     dataset:
       module: src.data.multiface.MultiFaceDataset
       kwargs:
-        root: data/MULTIFACE
+        root: /cluster/scratch/tguillou/diner_multiface_data
         depth_suffix: _TransMVSNet.png
-        depth_std_suffix: _TransMVSNet_conf.png
+        # depth_std_suffix: _TransMVSNet_conf.png
     dataloader:
       kwargs:
         shuffle: False

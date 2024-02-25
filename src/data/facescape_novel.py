@@ -11,7 +11,8 @@ from src.util.torch_helpers import dict_2_torchdict
 import itertools
 from itertools import product
 import tqdm
-from src.util.cam_geometry import to_homogeneous_trafo
+import cv2
+from src.util.cam_geometry import to_homogeneous_trafo, project_to_relative_coordinates
 
 OPENCV2OPENGL = np.array([[1., 0., 0., 0.], [0., -1., 0., 0], [0., 0., -1., 0.], [0., 0., 0., 1.]], dtype=np.float32)
 
@@ -23,7 +24,7 @@ class FacescapeDataSet(torch.utils.data.Dataset):
     DEPTH_FNAME = "depth_gt_pred_conf.png"
     DEPTH_MESH_FNAME = "depth_mesh.png"
 
-    def __init__(self, model, data_type, root: Path, stage, range_hor=45, range_vert=30, slide_range=40, slide_step=20, depth_fname=None):
+    def __init__(self, model, root: Path, stage, range_hor=45, range_vert=30, slide_range=40, slide_step=20, depth_fname=None, data_type=None):
         """
         Capstudio Data Loading Class.
         Camera extrinsics follow OPENCV convention (cams look in positive z direction, y points downwards)
@@ -38,20 +39,20 @@ class FacescapeDataSet(torch.utils.data.Dataset):
         closed_eyes = ["18"]
         open_mouth = ["03", "13", "16"]
 
+        self.unwanted_ref_expr = list()
+        self.unwanted_tgt_expr = list()
         if data_type == "NOO":
-            unwanted_ref_expr = closed_eyes
-            unwanted_tgt_expr = closed_eyes + open_mouth
+            self.unwanted_ref_expr = closed_eyes
+            self.unwanted_tgt_expr = closed_eyes + open_mouth
         elif data_type == "NCO":
-            unwanted_ref_expr = closed_eyes
-            unwanted_tgt_expr = open_mouth
+            self.unwanted_ref_expr = closed_eyes
+            self.unwanted_tgt_expr = open_mouth
         elif data_type == "NOC":
-            unwanted_ref_expr = closed_eyes + open_mouth
-            unwanted_tgt_expr = closed_eyes + open_mouth
+            self.unwanted_ref_expr = closed_eyes + open_mouth
+            self.unwanted_tgt_expr = closed_eyes + open_mouth
         elif data_type == "NCC":
-            unwanted_ref_expr = closed_eyes + open_mouth
-            unwanted_tgt_expr = open_mouth
-        self.unwanted_ref_expr = unwanted_ref_expr
-        self.unwanted_tgt_expr = unwanted_tgt_expr
+            self.unwanted_ref_expr = closed_eyes + open_mouth
+            self.unwanted_tgt_expr = open_mouth
         
         assert os.path.exists(root)
         self.data_dir = Path(root)
@@ -66,6 +67,24 @@ class FacescapeDataSet(torch.utils.data.Dataset):
         self.slide_step = slide_step
         self.conf2std = self._getconf2std()
         self.metas = self.get_metas()
+        self.gen_vertices, self.gen_extrinsics, self.gen_intrinsics = self.get_general()
+        
+    def get_general(self):
+        gen_path = self.data_dir / "003/03"
+        gen_vertices_path = gen_path  / "face_vertices.npy"
+        with open(gen_vertices_path, 'r') as gen_vertices_file:
+            gen_vertices = [list(map(float, line.split())) for line in gen_vertices_file]
+        # Convert the list of lists to a NumPy array
+        gen_vertices = np.array(gen_vertices).astype(np.float32)
+        gen_vertices = torch.from_numpy(gen_vertices)
+        
+        gen_cam_path = gen_path  / "cameras.json"
+        with open(gen_cam_path, "r") as f:
+            gen_cam_dict = json.load(f)
+        gen_intrinsics = torch.tensor(gen_cam_dict["18"]["intrinsics"])
+        gen_extrinsics = torch.tensor(gen_cam_dict["18"]["extrinsics"])
+        
+        return gen_vertices, gen_extrinsics, gen_intrinsics
 
     def _getconf2std(self):
         conf2std = lambda x: -1.582e-2 * x + 1.649e-2
@@ -201,6 +220,22 @@ class FacescapeDataSet(torch.utils.data.Dataset):
                 "/cluster/home/tguillou/target_depths_mesh",
                 '_'.join(str(sample_path).split('/')[-3:] + [self.DEPTH_MESH_FNAME])
             )
+            
+            ref_vertices_path = ref_scan_path / "face_vertices.npy"
+            with open(ref_vertices_path, 'r') as ref_vertices_file:
+                ref_vertices = [list(map(float, line.split())) for line in ref_vertices_file]
+            # Convert the list of lists to a NumPy array
+            ref_vertices = np.array(ref_vertices).astype(np.float32)
+            ref_vertices = torch.from_numpy(ref_vertices)
+
+            target_vertices_path = target_scan_path / "face_vertices.npy"
+            with open(target_vertices_path, 'r') as target_vertices_file:
+                target_vertices = [list(map(float, line.split())) for line in target_vertices_file]
+            # Convert the list of lists to a NumPy array
+            target_vertices = np.array(target_vertices).astype(np.float32)
+            target_vertices = torch.from_numpy(target_vertices)
+
+            offset_target_to_source = ref_vertices - target_vertices
                 
             target_rgb, target_alpha = self.read_rgba(target_rgba_path)
             target_depth, target_depth_std = self.read_depth(target_mesh_depth_path)
@@ -227,32 +262,36 @@ class FacescapeDataSet(torch.utils.data.Dataset):
                 ref_cam_dict = json.load(f)
             with open(target_cam_path, "r") as f:
                 target_cam_dict = json.load(f)
-            target_extrinsics = torch.tensor(target_cam_dict[target_id]["extrinsics"])
-            src_extrinsics = torch.tensor([ref_cam_dict[src_id]["extrinsics"] for src_id in source_ids])
-            target_extrinsics = to_homogeneous_trafo(target_extrinsics[None])[0]
-            src_extrinsics = to_homogeneous_trafo(src_extrinsics)
             target_intrinsics = torch.tensor(target_cam_dict[target_id]["intrinsics"])
             src_intrinsics = torch.tensor([ref_cam_dict[src_id]["intrinsics"] for src_id in source_ids])
-
-            ref_vertices_path = ref_scan_path / "face_vertices.npy"
-            with open(ref_vertices_path, 'r') as ref_vertices_file:
-                ref_vertices = [list(map(float, line.split())) for line in ref_vertices_file]
-            # Convert the list of lists to a NumPy array
-            ref_vertices = np.array(ref_vertices).astype(np.float32)
-            ref_vertices = torch.from_numpy(ref_vertices)
-
-            target_vertices_path = target_scan_path / "face_vertices.npy"
-            with open(target_vertices_path, 'r') as target_vertices_file:
-                target_vertices = [list(map(float, line.split())) for line in target_vertices_file]
-            # Convert the list of lists to a NumPy array
-            target_vertices = np.array(target_vertices).astype(np.float32)
-            target_vertices = torch.from_numpy(target_vertices)
-
-            offset_target_to_source = ref_vertices - target_vertices
+            target_extrinsics = torch.tensor(target_cam_dict[target_id]["extrinsics"])
+            src_extrinsics = torch.tensor([ref_cam_dict[src_id]["extrinsics"] for src_id in source_ids])
+            
+#             print('ref vertx N 3', ref_vertices.shape, flush=True)
+#             print('extr intr 3 4 3 3', src_extrinsics[0].shape, src_intrinsics[0].shape, flush=True)
+#             src_gt_keypoints = torch.tensor([project_to_relative_coordinates(ref_vertices, src_extrinsics[i], src_intrinsics[i]) for i in range(2)])
+#             print('gt kpts', src_gt_keypoints.shape, src_gt_keypoints.min(), src_gt_keypoints.max(), flush=True)
+#             test_img = src_rgbs[0].cpu().numpy().copy()
+#             print('test image size, needs to be 256x256x3', test_img.shape)
+#             for gt_keypoint in src_gt_keypoints[0].squeeze().cpu().numpy():
+#                 gt_keypoint = (int(gt_keypoint[0]), int(gt_keypoint[1]))
+#                 test_img = cv2.circle(test_img, gt_keypoint, radius=2, color=(0, 0, 255), thickness=-1)
+#             cv2.imwrite("test.png", test_img)
+            
+#             raise ValueError('Check here')
+                
+            # image = cv2.imread(str(image_path))
+            # for rel_point in rel_points[:16]:
+            #     rel_point = (int(rel_point[0]), int(rel_point[1]))
+            #     image = cv2.circle(image, rel_point, radius=2, color=(0, 0, 255), thickness=-1)
+            # cv2.imwrite(f"{index}_jawline.png", image)
+            
+            target_extrinsics = to_homogeneous_trafo(target_extrinsics[None])[0]
+            src_extrinsics = to_homogeneous_trafo(src_extrinsics)
 
             sample = dict(target_rgb=target_rgb,
-                          target_depth=target_depth,
-                          target_depth_std=target_depth_std,
+                          # target_depth=target_depth,
+                          # target_depth_std=target_depth_std,
                           target_alpha=target_alpha,
                           target_extrinsics=target_extrinsics,
                           target_intrinsics=target_intrinsics,
@@ -268,8 +307,12 @@ class FacescapeDataSet(torch.utils.data.Dataset):
                           src_alphas=src_alphas,
                           src_extrinsics=src_extrinsics,
                           src_intrinsics=src_intrinsics,
+                          src_vertices=ref_vertices,
                           src_view_ids=torch.tensor([int(src_id) for src_id in source_ids]),
-                          offset_target_to_source=offset_target_to_source)
+                          offset_target_to_source=offset_target_to_source,
+                          gen_extrinsics = self.gen_extrinsics,
+                          gen_intrinsics = self.gen_intrinsics,
+                          offset_target_to_gen = self.gen_vertices - target_vertices)
 
             sample = dict_2_torchdict(sample)
 

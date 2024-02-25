@@ -1,7 +1,7 @@
 logger:
   kwargs:
     save_dir: "outputs/facescape"
-    version: "NCO_tgt"
+    version: "gen_noc"
 
 data:
   train:
@@ -34,7 +34,7 @@ data:
         num_workers: 4
 
 nerf:
-  module: src.models.novel_pixelnerf.PixelNeRF
+  module: src.models.novel.novel_pixelnerf.PixelNeRF
   kwargs:
     encoder_conf:
       module: src.models.image_encoder.SpatialEncoder
@@ -55,11 +55,19 @@ nerf:
         combine_type: average
 
 renderer:
-  module: src.models.nerf_novel_renderer.NeRFRendererDGS
+  module: src.models.novel.nerf_novel_renderer.NeRFRendererDGS
   kwargs:
     n_samples: 40
     n_depth_candidates: 1000
     n_gaussian: 15
+    
+regressor:
+  module: src.models.novel.dense_regressor.DenseRegressor
+  kwargs:
+    name: EfficientNet
+    dim_output: 2
+    num_point: 26317
+    loss_name: L1
 
 
 optimizer_diner:
@@ -71,7 +79,7 @@ optimizer_diner:
     lr: 1e-4
 
 trainer:
-  # ckpt_path: /cluster/home/tguillou/diner/outputs/facescape/DINER/epoch=13-step=239999.ckpt
+  ckpt_path: /cluster/home/tguillou/diner/outputs/facescape/gen_noc/epoch=1-step=29999.ckpt
   kwargs:
     enable_checkpointing: True
     accelerator: gpu # delete if gpus

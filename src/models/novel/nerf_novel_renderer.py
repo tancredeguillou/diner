@@ -76,7 +76,7 @@ class NeRFRendererDGS(torch.nn.Module):
         return z_samples
 
     @torch.no_grad()
-    def sample_depthguided(self, rays, model, n_samples, n_candidates, target_vertices, offsets,
+    def sample_depthguided(self, rays, model, n_samples, n_candidates, target_vertices, tgt_in_offsets,
                            depth_diff_max=0.05, n_gaussian=None):
         """
         Ray sampling guided by reference depth maps
@@ -104,7 +104,7 @@ class NeRFRendererDGS(torch.nn.Module):
         step_size = (rays[..., -1] - rays[..., -2]) / n_candidates  # SB, NR
         xyz = rays[..., None, :3] + z_samples.unsqueeze(-1) * rays[..., None, 3:6] # SB, NR, NC, 3
         xyz = xyz.view(SB, NR * n_candidates, 3)
-        xyz = self.deform_points(xyz, target_vertices, offsets)
+        xyz = self.deform_points(xyz, target_vertices, tgt_in_offsets)
         xyz = xyz.view(SB, NR, n_candidates, 3)
 
         # Transform query points into the camera spaces of the input views
@@ -167,7 +167,7 @@ class NeRFRendererDGS(torch.nn.Module):
         return z_samples_depth
 
     @torch.no_grad()
-    def sample_depthguided_target(self, rays, model, n_samples, n_candidates, target_vertices, offsets,
+    def sample_depthguided_target(self, rays, model, n_samples, n_candidates, target_vertices, tgt_in_offsets,
                            depth_diff_max=0.05, n_gaussian=None):
         """
         Ray sampling guided by reference depth maps
@@ -391,7 +391,7 @@ class NeRFRendererDGS(torch.nn.Module):
 
         return z_samples_depth
 
-    def composite(self, model, rays, z_samp, target_vertices, offsets):
+    def composite(self, model, rays, z_samp, target_vertices, tgt_in_offsets, tgt_gen_offsets):
         """
         Render RGB and depth for each ray using NeRF alpha-compositing formula,
         given sampled positions along each ray (see sample_depthguided)
@@ -438,9 +438,10 @@ class NeRFRendererDGS(torch.nn.Module):
 
         val_all = []
         for pnts, dirs in zip(split_points, split_viewdirs):
-            deformed_points = self.deform_points(pnts, target_vertices, offsets)
+            in_deformed_points = self.deform_points(pnts, target_vertices, tgt_in_offsets)
+            gen_deformed_points = self.deform_points(pnts, target_vertices, tgt_gen_offsets)
             # raise ValueError()
-            val_all.append(model(deformed_points, pnts, viewdirs=dirs))
+            val_all.append(model(in_deformed_points, gen_deformed_points, viewdirs=dirs))
             # val_all.append(model(deformed_points, viewdirs=dirs))
         points = None
         viewdirs = None
@@ -508,7 +509,7 @@ class NeRFRendererDGS(torch.nn.Module):
         return z_samples
 
     def forward(
-            self, model, rays, target_vertices, offsets, want_weights=False,
+            self, model, rays, target_vertices, tgt_in_offsets, tgt_gen_offsets, want_weights=False,
     ):
         """
         :param model: nerf model (instance of src.models.pixelnerf.PixelNeRF)
@@ -522,17 +523,17 @@ class NeRFRendererDGS(torch.nn.Module):
         """
         assert len(rays.shape) == 3
 
-        z_depthguided = self.sample_depthguided_target(rays, model,
+        z_depthguided = self.sample_depthguided(rays, model,
                                                 n_samples=self.n_samples,
                                                 n_candidates=self.n_depth_candidates,
                                                 target_vertices=target_vertices,
-                                                offsets=offsets,
+                                                tgt_in_offsets=tgt_in_offsets,
                                                 n_gaussian=self.n_gaussian)  # SB, Nrays, nsamples
         # I think this only adds uniform depth samples where they are lacking, so we 
         # may not need to change anything
         z_depthguided = self.fill_up_uniform_samples(z_depthguided, rays)  # (SB, B, Kc)
 
-        fine_weights, fine_rgb, fine_depth = self.composite(model, rays, z_depthguided, target_vertices, offsets)
+        fine_weights, fine_rgb, fine_depth = self.composite(model, rays, z_depthguided, target_vertices, tgt_in_offsets, tgt_gen_offsets)
         outputs = DotMap(fine=self._format_outputs(
             fine_weights, fine_rgb, fine_depth, want_weights=want_weights))
 

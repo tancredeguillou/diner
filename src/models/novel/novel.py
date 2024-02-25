@@ -18,9 +18,9 @@ import torch
 
 
 class NOVEL(LightningModule):
-    def __init__(self, nerf_conf, renderer_conf, znear, zfar, ray_batch_size=128, lr=1e-4, img_log_interval=10000,
+    def __init__(self, nerf_conf, renderer_conf, regressor_conf, znear, zfar, ray_batch_size=128, lr=1e-4, img_log_interval=10000,
                  n_samples_score_eval=100, cam_sweep_settings=dict(), w_vgg=0., vgg_spatch=64,
-                 w_antibias=0., antibias_downsampling=3):
+                 w_antibias=0., antibias_downsampling=3, regress_only=False):
         """
         NOVEL Optimizer
 
@@ -46,8 +46,10 @@ class NOVEL(LightningModule):
 
         self.nerf = import_obj(nerf_conf.module)(**nerf_conf.kwargs)
         self.renderer = import_obj(renderer_conf.module)(**renderer_conf.kwargs)
+        self.dense_regressor = import_obj(regressor_conf.module)(**regressor_conf.kwargs)
         self.cam_sweep_settings = cam_sweep_settings
 
+        self.regress_only=regress_only
         self.img_log_interval = img_log_interval
         self.n_samples_score_eval = n_samples_score_eval
         self.lr = lr
@@ -69,16 +71,18 @@ class NOVEL(LightningModule):
                          extrinsics=batch["src_extrinsics"],
                          intrinsics=batch["src_intrinsics"])
         
-        self.nerf.encode_target(target_image=batch["target_rgb"].unsqueeze(1),
-                         target_depth=batch["target_depth"].unsqueeze(1),
-                         target_depth_std=batch["target_depth_std"].unsqueeze(1),
-                         target_extrinsic=batch["target_extrinsics"].unsqueeze(1),
-                         target_intrinsic=batch["target_intrinsics"].unsqueeze(1))
+        self.nerf.encode_gen(extrinsics=batch["gen_extrinsics"],
+                             intrinsics=batch["gen_intrinsics"],
+                             image_shape=batch["target_rgb"].shape[-2:])
+        
+        # self.nerf.encode_target(target_image=batch["target_rgb"].unsqueeze(1),
+        #                  target_depth=batch["target_depth"].unsqueeze(1),
+        #                  target_depth_std=batch["target_depth_std"].unsqueeze(1),
+        #                  target_extrinsic=batch["target_extrinsics"].unsqueeze(1),
+        #                  target_intrinsic=batch["target_intrinsics"].unsqueeze(1))
 
     def predict_imgs_from_batch(self, batch, return_depth=False):
         SB, _, H, W = batch["target_rgb"].shape
-        target_vertices = batch["target_vertices"]
-        offsets = batch["offset_target_to_source"]
         self.encode_batch(batch)
 
         # generate rays
@@ -91,7 +95,11 @@ class NOVEL(LightningModule):
         # rendering
         rgb, depth = list(), list()
         for ray_batch in torch.split(rays, self.ray_batch_size, dim=1):
-            render_dict = self.renderer.forward(model=self.nerf, rays=ray_batch.contiguous(), target_vertices=target_vertices, offsets=offsets)
+            render_dict = self.renderer.forward(model=self.nerf,
+                                                rays=ray_batch.contiguous(),
+                                                target_vertices=batch["target_vertices"],
+                                                tgt_in_offsets=batch["offset_target_to_source"],
+                                                tgt_gen_offsets=batch["offset_target_to_gen"])
             rgb.append(render_dict.fine.rgb)
             depth.append(render_dict.fine.depth)
         rgb = torch.cat(rgb, dim=1)
@@ -195,10 +203,12 @@ class NOVEL(LightningModule):
                 # rendering
                 rgbs_ = list()
                 depths_ = list()
-                target_vertices = base_batch["target_vertices"]
-                offsets = base_batch["offset_target_to_source"]
                 for rays_batch in rays:
-                    render_dict = self.renderer.forward(model=self.nerf, rays=rays_batch, target_vertices=target_vertices, offsets=offsets)
+                    render_dict = self.renderer.forward(model=self.nerf,
+                                                        rays=rays_batch,
+                                                        target_vertices=base_batch["target_vertices"],
+                                                        tgt_in_offsets=base_batch["offset_target_to_source"],
+                                                        tgt_gen_offsets=base_batch["offset_target_to_gen"])
                     rgb = render_dict.fine.rgb
                     depth = render_dict.fine.depth
                     rgb = rgb.view(-1, 3).cpu()
@@ -226,8 +236,6 @@ class NOVEL(LightningModule):
 
     def calc_losses(self, batch):
         SB, _, H, W = batch["target_rgb"].shape
-        target_vertices = batch["target_vertices"]
-        offsets = batch["offset_target_to_source"]
         self.encode_batch(batch)
 
         # generate rays
@@ -270,7 +278,11 @@ class NOVEL(LightningModule):
         rays = rays.view(SB, H * W, -1)[batch_idx_helper, pix_idcs]  # (SB, B, 8)
 
         # predict colors
-        render_dict = self.renderer.forward(model=self.nerf, rays=rays, target_vertices=target_vertices, offsets=offsets)
+        render_dict = self.renderer.forward(model=self.nerf,
+                                            rays=rays,
+                                            target_vertices=batch["target_vertices"],
+                                            tgt_in_offsets=batch["offset_target_to_source"],
+                                            tgt_gen_offsets=batch["offset_target_to_gen"])
         pred_fine = render_dict.fine.rgb
 
         # calculate raycolors
@@ -302,8 +314,10 @@ class NOVEL(LightningModule):
         return loss_dict
 
     def training_step(self, batch, batch_idx):
-        # loss calculation
-        loss_dict = self.calc_losses(batch)
+        if self.regress_only:
+            loss_dict = self.dense_regressor.calc_losses(batch)
+        else:
+            loss_dict = self.calc_losses(batch)
         loss_dict["step"] = float(self.global_step)
         batch_size = batch["target_rgb"].shape[0]
         self.log_dict(loss_dict, on_step=True, batch_size=batch_size)
@@ -312,7 +326,10 @@ class NOVEL(LightningModule):
 
     @torch.no_grad()
     def validation_step(self, batch, batch_idx):
-        loss_dict = self.calc_losses(batch)
+        if self.regress_only:
+            loss_dict = self.dense_regressor.calc_losses(batch)
+        else:
+            loss_dict = self.calc_losses(batch)
         log_dict = prefix_dict_keys(loss_dict, "val_")
         log_dict["step"] = float(self.global_step)
         batch_size = batch["target_rgb"].shape[0]
@@ -322,7 +339,7 @@ class NOVEL(LightningModule):
     @rank_zero_only
     @torch.no_grad()
     def on_validation_epoch_end(self) -> None:
-        if self.global_step > 0:
+        if self.global_step > 0 and not self.regress_only:
             eval_dir = os.path.join(self.trainer.log_dir, f"eval_{self.trainer.global_step:06d}")
             os.makedirs(eval_dir, exist_ok=True)
 
