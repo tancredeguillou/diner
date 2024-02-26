@@ -238,7 +238,7 @@ class FacescapeDataSet(torch.utils.data.Dataset):
             offset_target_to_source = ref_vertices - target_vertices
                 
             target_rgb, target_alpha = self.read_rgba(target_rgba_path)
-            target_depth, target_depth_std = self.read_depth(target_mesh_depth_path)
+            # target_depth, target_depth_std = self.read_depth(target_mesh_depth_path)
             image_shape = target_rgb.shape[1:]
 
             src_rgbs = list()
@@ -266,25 +266,6 @@ class FacescapeDataSet(torch.utils.data.Dataset):
             src_intrinsics = torch.tensor([ref_cam_dict[src_id]["intrinsics"] for src_id in source_ids])
             target_extrinsics = torch.tensor(target_cam_dict[target_id]["extrinsics"])
             src_extrinsics = torch.tensor([ref_cam_dict[src_id]["extrinsics"] for src_id in source_ids])
-            
-#             print('ref vertx N 3', ref_vertices.shape, flush=True)
-#             print('extr intr 3 4 3 3', src_extrinsics[0].shape, src_intrinsics[0].shape, flush=True)
-#             src_gt_keypoints = torch.tensor([project_to_relative_coordinates(ref_vertices, src_extrinsics[i], src_intrinsics[i]) for i in range(2)])
-#             print('gt kpts', src_gt_keypoints.shape, src_gt_keypoints.min(), src_gt_keypoints.max(), flush=True)
-#             test_img = src_rgbs[0].cpu().numpy().copy()
-#             print('test image size, needs to be 256x256x3', test_img.shape)
-#             for gt_keypoint in src_gt_keypoints[0].squeeze().cpu().numpy():
-#                 gt_keypoint = (int(gt_keypoint[0]), int(gt_keypoint[1]))
-#                 test_img = cv2.circle(test_img, gt_keypoint, radius=2, color=(0, 0, 255), thickness=-1)
-#             cv2.imwrite("test.png", test_img)
-            
-#             raise ValueError('Check here')
-                
-            # image = cv2.imread(str(image_path))
-            # for rel_point in rel_points[:16]:
-            #     rel_point = (int(rel_point[0]), int(rel_point[1]))
-            #     image = cv2.circle(image, rel_point, radius=2, color=(0, 0, 255), thickness=-1)
-            # cv2.imwrite(f"{index}_jawline.png", image)
             
             target_extrinsics = to_homogeneous_trafo(target_extrinsics[None])[0]
             src_extrinsics = to_homogeneous_trafo(src_extrinsics)

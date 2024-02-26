@@ -2,6 +2,37 @@ import torch
 import numpy as np
 from scipy.spatial.transform import Slerp as RotSlerp
 
+def project_to_relative_coordinates_torch(points_abs, extrinsics, intrinsics):
+    """
+    Project an array of 3D points from absolute coordinates to relative coordinates.
+
+    Parameters:
+        points_abs (torch.Tensor): Tensor of 3D points in absolute coordinates, shape (N, 3).
+        extrinsics (torch.Tensor): Extrinsics matrix (3x4) representing the camera's pose.
+        intrinsics (torch.Tensor): Intrinsics matrix (3x3) representing the camera's focal length and principal point.
+
+    Returns:
+        torch.Tensor: Tensor of 3D points in relative coordinates, shape (N, 3).
+    """
+    # Homogeneous coordinates for the input points
+    ones_column = torch.ones((points_abs.shape[0], 1), dtype=points_abs.dtype, device=points_abs.device)
+    points_homogeneous = torch.cat((points_abs, ones_column), dim=1)
+    
+    # Apply extrinsics to get points in camera coordinates
+    points_cam = torch.matmul(points_homogeneous, extrinsics.t())
+    
+    # Apply intrinsics to get points in relative coordinates
+    points_rel_homogeneous = torch.matmul(points_cam, intrinsics.t())
+    
+    # Normalize by the last column to get homogeneous coordinates
+    points_rel_homogeneous /= points_rel_homogeneous[:, 2:3]
+    
+    # Extract the relative coordinates
+    points_rel = points_rel_homogeneous[:, :2]
+
+    return points_rel
+
+
 
 def project_to_relative_coordinates(points_abs, extrinsics, intrinsics):
     """
