@@ -12,7 +12,7 @@ import itertools
 from itertools import product
 import tqdm
 import cv2
-from src.util.cam_geometry import to_homogeneous_trafo, project_to_relative_coordinates, project_to_relative_coordinates_torch
+from src.util.cam_geometry import to_homogeneous_trafo, project_to_relative_coordinates
 
 OPENCV2OPENGL = np.array([[1., 0., 0., 0.], [0., -1., 0., 0], [0., 0., -1., 0.], [0., 0., 0., 1.]], dtype=np.float32)
 
@@ -137,20 +137,11 @@ class FacescapeDataSet(torch.utils.data.Dataset):
                 
             image, _ = self.read_rgba(img_rgba_path)
             
-            target_keypoints = project_to_relative_coordinates_torch(img_vertices, img_extrinsics, img_intrinsics) # (NP, 2) - 5.2, 278.3
-            test_img = image.cpu().numpy().transpose((1, 2, 0)).copy() # (256, 256, 3)
-            test_img = test_img * 255
-            # print('test image size, needs to be 256x256x3', test_img.shape)
-            for gt_keypoint in target_keypoints.cpu().numpy():
-                gt_keypoint = (int(gt_keypoint[0]), int(gt_keypoint[1]))
-                test_img = cv2.circle(test_img, gt_keypoint, radius=2, color=(0, 0, 255), thickness=-1)
-            cv2.imwrite("test.png", test_img)
-            
-            raise ValueError('Check here')
+            target_keypoints = project_to_relative_coordinates(img_vertices, img_extrinsics, img_intrinsics) # (NP, 2) - 5.2, 278.3
 
             sample = dict(image=image,
                           target_keypoints=target_keypoints,
-                          sample_name=f"{subject}-{img_frame}-{img_id}-",
+                          sample_name=f"{subject}-{img_frame}-{img_id}",
                           img_frame=img_frame,
                           img_view_id=torch.tensor(int(img_id)))
             sample = dict_2_torchdict(sample)

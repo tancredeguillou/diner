@@ -1,6 +1,5 @@
 import torch
 from functools import partial
-# from torchvision.models.efficientnet import _efficientnet, MBConvConfig
 from torchvision.models import efficientnet_b0
 from torchvision.models.resnet import resnet18
 from torchvision.models.convnext import convnext_tiny
@@ -24,35 +23,7 @@ class DenseRegressor(torch.nn.Module):
         elif self.name == 'ResNet18':
             model = resnet18(num_classes=self.dim_output*self.num_point)
         else:
-            # bneck_conf = partial(MBConvConfig, width_mult=1.0, depth_mult=1.0)
-            # inverted_residual_setting = [
-            #     bneck_conf(1, 3, 1, 32, 16, 1),
-            #     bneck_conf(4, 3, 2, 16, 32, 2),
-            #     bneck_conf(4, 3, 2, 32, 48, 2),
-            #     bneck_conf(4, 3, 2, 48, 96, 3),
-            #     bneck_conf(6, 3, 1, 96, 112, 5),
-            #     bneck_conf(6, 3, 2, 112, 192, 8),
-            # ]
-            # last_channel=None
-            # model = _efficientnet(
-            #     inverted_residual_setting=inverted_residual_setting,
-            #     dropout=0.2,
-            #     last_channel=last_channel,
-            #     pretrained=None,
-            #     progress=True,
-            #     width_mult=1.0,
-            #     depth_mult=1.0,
-            #     arch="efficientnet_b0",
-            #     num_classes=self.dim_output*self.num_point)
             model = efficientnet_b0(weights='DEFAULT', num_classes=self.dim_output*self.num_point)
-            
-#             inverted_residual_setting: Sequence[Union[MBConvConfig, FusedMBConvConfig]],
-#     dropout: float,
-#     last_channel: Optional[int],
-#     weights: Optional[WeightsEnum],
-#     progress: bool,
-#     **kwargs: Any,
-
         return model
     
     def create_loss(self):
@@ -65,33 +36,14 @@ class DenseRegressor(torch.nn.Module):
         return self.dense_regressor(x)
     
     def calc_losses(self, batch):
-        images=batch["src_rgbs"]
-        b, n, c, h, w = images.shape
-        vertices=batch["src_vertices"]
-        extrinsics=batch["src_extrinsics"][..., :-1, :]
-        intrinsics=batch["src_intrinsics"]
-        # print('extrinsics', extrinsics.shape, flush=True)
-        # print('intrinsics', intrinsics.shape, flush=True)
+        image=batch["image"] # (2, 3, 256, 256)
+        target_kpts=batch["target_keypoints"] # (2, 26317, 2)
+        b, np, d = target_kpts.shape
         
-        projection_matrices = torch.matmul(intrinsics, extrinsics)
-        # print('projection_matrics', projection_matrices.shape, flush=True)
-        
-        output = self.forward(images.view(b*n, c, h, w)).view(b, n, self.num_point, self.dim_output)
-        # print('output shape', output.shape, flush=True)
-        
-        proj_split = projection_matrices.split(1, dim=1)
-        # print('proj_split shape', len(proj_split), flush=True)
-        # print('proj_list 0 shape', proj_split[0].shape, flush=True)
-        output_split = output.split(1, dim=1)
-        # print('output_split shape', len(output_split), flush=True)
-        # print('output_split 0 shape', output_split[0].shape, flush=True)
-        
-        final_vertices = triangulate_points(proj_split[0], proj_split[1], output_split[0], output_split[1])
-        # print('final vertices shape', final_vertices.shape, flush=True)
-        # print('vertices shape', vertices.shape, flush=True)
+        pred_kpts = self.forward(image) # (2, 26317*2)
+        pred_kpts = pred_kpts.view(b, np, d) # (2, 26317, 2)
         
         loss_dict = {}
-        loss_dict["total"] = self.loss_function(vertices, final_vertices.squeeze())
+        loss_dict["total"] = self.loss_function(target_kpts, pred_kpts)
         
-        # raise ValueError()
         return loss_dict
