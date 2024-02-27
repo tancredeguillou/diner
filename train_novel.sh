@@ -5,7 +5,7 @@
 #SBATCH -J gen_pe
 #SBATCH -o outputs/gen_pe.out
 #SBATCH -e outputs/gen_pe.err
-#SBATCH -t 10-00
+#SBATCH -t 05-00
 #SBATCH --gpus=rtx_3090:1
 #SBATCH -A es_tang
 

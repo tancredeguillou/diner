@@ -141,8 +141,8 @@ class FacescapeDataSet(torch.utils.data.Dataset):
     
     @staticmethod
     def read_pos_encoding(pos_encoding_path: Path):
-        pos_encoding = pil_to_tensor(Image.open(pos_encoding_path)).float() / 255. # range: 0 ... 1
-        pos_encoding = pos_encoding.permute(1, 2, 0)
+        pos_encoding = pil_to_tensor(Image.open(pos_encoding_path)).float() # / 255. TODO check if we should normalize or not # range: 0 ... 1
+        # pos_encoding = pos_encoding.permute(1, 2, 0)
         return pos_encoding
 
     @staticmethod
@@ -283,15 +283,6 @@ class FacescapeDataSet(torch.utils.data.Dataset):
             src_depth_stds = self.conf2std(src_depth_stds)
             src_alphas = torch.stack(src_alphas)
             src_pos_encodings = torch.stack(src_pos_encodings)
-            
-            print('src mesh', src_mesh_depth_paths, flush=True)
-            print('src pos', src_pos_encoding_paths, flush=True)
-            print('target mesh', target_mesh_depth_path, flush=True)
-            print('target pos', target_pos_encoding_path, flush=True)
-            
-            print('max min', target_pos_encoding.shape, target_pos_encoding.min(), target_pos_encoding.max(), flush=True)
-            
-            raise ValueError()
 
             with open(ref_cam_path, "r") as f:
                 ref_cam_dict = json.load(f)

@@ -123,25 +123,6 @@ class SpatialEncoder(nn.Module):
         )
         samples = samples[:, :, :, 0]  # (N_, C, N)
 
-        # # printing sample values of first layer (64dims) on center 100x100px on fg, use mode="nearest"
-        # # and set self.model.bn1 = nn.Sequential()
-        # uv_mask = torch.all(uv.abs() < 100. / latent.shape[-1], dim=-1)[:, :, 0]
-        # samples_100 = samples.permute(0, 2, 1)[uv_mask][..., :64]
-        # if self.image_padding != 0:
-        #     torch.save(samples_100, "/tmp/test.pt")
-        # else:
-        #     print(torch.all(samples_100==torch.load("/tmp/test.pt")))
-        #
-        # # visualize sampling
-        # import matplotlib.pyplot as plt
-        # fig = plt.figure()
-        # plt.imshow(latent[0, :3].permute(1, 2, 0).detach().cpu())
-        # plt.scatter(*((uv[0, :, 0].cpu() + 1.) * latent.shape[-1] / 2 - .5).unbind(dim=-1), s=10.)
-        # plt.xlim((-1, latent.shape[-1]))
-        # plt.ylim((latent.shape[-1], -1))
-        # if self.feature_padding == 0:
-        #     plt.show()
-
         samples = samples.view(SB, NV, *samples.shape[-2:])  # (SB, NV, C, N)
         return samples
 

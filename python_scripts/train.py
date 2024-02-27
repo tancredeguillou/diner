@@ -1,8 +1,6 @@
 """
 Main script for training diner
 """
-
-from pytorch3d.ops.knn import knn_points
 from omegaconf import OmegaConf
 import sys
 from pathlib import Path
@@ -11,6 +9,7 @@ from src.data.pl_datamodule import PlDataModule
 from pytorch_lightning import Trainer
 from src.models.diner import DINER
 from src.models.novel.novel import NOVEL
+from src.models.novel_pe.novel_pe import NOVEL_PE
 from src.models.keypointnerf import KeypointNeRFLightningModule
 from src.models.ournerf import OurNeRFLightningModule
 from pytorch_lightning.loggers.tensorboard import TensorBoardLogger
@@ -25,7 +24,7 @@ def main():
     data_type = None
     if len(sys.argv) == 4:
         data_type = sys.argv[3]
-    if model_name not in ['DINER', 'KeypointNeRF', 'NOVEL']:
+    if model_name not in ['DINER', 'KeypointNeRF', 'NOVEL', 'NOVEL_PE']:
         raise ValueError(f'Model Name should be DINER or KeypointNeRF but got: {model_name}')
     
     conf = OmegaConf.load(config_path)
@@ -43,6 +42,9 @@ def main():
                               zfar=datamodule.train_set.zfar, **conf.optimizer_keypointnerf.kwargs)
     elif model_name == 'NOVEL':
         model = NOVEL(nerf_conf=conf.nerf, renderer_conf=conf.renderer, regressor_conf=conf.regressor, znear=datamodule.train_set.znear,
+                              zfar=datamodule.train_set.zfar, **conf.optimizer_diner.kwargs)
+    elif model_name == 'NOVEL_PE':
+        model = NOVEL_PE(nerf_conf=conf.nerf, renderer_conf=conf.renderer, regressor_conf=conf.regressor, znear=datamodule.train_set.znear,
                               zfar=datamodule.train_set.zfar, **conf.optimizer_diner.kwargs)
     else:
         raise ValueError(f'Model Name should be DINER or KeypointNeRF but got: {model_name}')
