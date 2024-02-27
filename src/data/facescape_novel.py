@@ -23,6 +23,7 @@ class FacescapeDataSet(torch.utils.data.Dataset):
     RGBA_FNAME = "rgba_colorcalib_v2.png"
     DEPTH_FNAME = "depth_gt_pred_conf.png"
     DEPTH_MESH_FNAME = "depth_mesh.png"
+    POS_ENCODING_FNAME = "pos_encoding.png"
 
     def __init__(self, model, root: Path, stage, range_hor=45, range_vert=30, slide_range=40, slide_step=20, depth_fname=None, data_type=None):
         """
@@ -60,6 +61,7 @@ class FacescapeDataSet(torch.utils.data.Dataset):
         self.rnd = np.random.default_rng() if stage == "train" else np.random.default_rng(128)
         self.DEPTH_FNAME = depth_fname if depth_fname is not None else self.DEPTH_FNAME
         self.DEPTH_MESH_FNAME = self.DEPTH_MESH_FNAME
+        self.POS_ENCODING_FNAME = self.POS_ENCODING_FNAME
         self.range_hor = range_hor
         self.range_vert = range_vert
         self.nsource = 2
@@ -67,10 +69,10 @@ class FacescapeDataSet(torch.utils.data.Dataset):
         self.slide_step = slide_step
         self.conf2std = self._getconf2std()
         self.metas = self.get_metas()
-        self.gen_vertices, self.gen_extrinsics, self.gen_intrinsics = self.get_general()
+        self.gen_vertices, self.gen_pos_encoding, self.gen_extrinsics, self.gen_intrinsics = self.get_general()
         
     def get_general(self):
-        gen_path = self.data_dir / "003/03"
+        gen_path = self.data_dir / "002/03"
         gen_vertices_path = gen_path  / "face_vertices.npy"
         with open(gen_vertices_path, 'r') as gen_vertices_file:
             gen_vertices = [list(map(float, line.split())) for line in gen_vertices_file]
@@ -84,7 +86,10 @@ class FacescapeDataSet(torch.utils.data.Dataset):
         gen_intrinsics = torch.tensor(gen_cam_dict["18"]["intrinsics"])
         gen_extrinsics = torch.tensor(gen_cam_dict["18"]["extrinsics"])
         
-        return gen_vertices, gen_extrinsics, gen_intrinsics
+        gen_pos_encoding_path = Path('/cluster/home/tguillou/target_pos_encodings/002_03_view_00018_pos_encoding.png')
+        gen_pos_encoding = self.read_pos_encoding(gen_pos_encoding_path)
+        
+        return gen_vertices, gen_pos_encoding, gen_extrinsics, gen_intrinsics
 
     def _getconf2std(self):
         conf2std = lambda x: -1.582e-2 * x + 1.649e-2
@@ -133,6 +138,12 @@ class FacescapeDataSet(torch.utils.data.Dataset):
                                    conf_img)
         
         return pred_img, conf_img
+    
+    @staticmethod
+    def read_pos_encoding(pos_encoding_path: Path):
+        pos_encoding = pil_to_tensor(Image.open(pos_encoding_path)).float() / 255. # range: 0 ... 1
+        pos_encoding = pos_encoding.permute(1, 2, 0)
+        return pos_encoding
 
     @staticmethod
     def int_to_viewdir(i: int):
@@ -221,6 +232,16 @@ class FacescapeDataSet(torch.utils.data.Dataset):
                 '_'.join(str(sample_path).split('/')[-3:] + [self.DEPTH_MESH_FNAME])
             )
             
+            src_pos_encoding_paths = [source_path / self.POS_ENCODING_FNAME for source_path in source_depth_paths]
+            src_pos_encoding_paths = [os.path.join(
+                "/cluster/home/tguillou/ref_pos_encodings",
+                '_'.join(str(src_pos_encoding_path).split('/'))
+            ) for src_pos_encoding_path in src_pos_encoding_paths]
+            target_pos_encoding_path = os.path.join(
+                "/cluster/home/tguillou/target_pos_encodings",
+                '_'.join(str(sample_path).split('/')[-3:] + [self.POS_ENCODING_FNAME])
+            )
+            
             ref_vertices_path = ref_scan_path / "face_vertices.npy"
             with open(ref_vertices_path, 'r') as ref_vertices_file:
                 ref_vertices = [list(map(float, line.split())) for line in ref_vertices_file]
@@ -238,6 +259,7 @@ class FacescapeDataSet(torch.utils.data.Dataset):
             offset_target_to_source = ref_vertices - target_vertices
                 
             target_rgb, target_alpha = self.read_rgba(target_rgba_path)
+            target_pos_encoding = self.read_pos_encoding(target_pos_encoding_path)
             # target_depth, target_depth_std = self.read_depth(target_mesh_depth_path)
             image_shape = target_rgb.shape[1:]
 
@@ -245,18 +267,31 @@ class FacescapeDataSet(torch.utils.data.Dataset):
             src_alphas = list()
             src_depths = list()
             src_depth_stds = list()
-            for src_rgba_path, src_depth_path, src_mesh_depth_path in \
-                    zip(src_rgba_paths, src_depth_paths, src_mesh_depth_paths):
+            src_pos_encodings = list()
+            for src_rgba_path, src_depth_path, src_mesh_depth_path, src_pos_encoding_path in \
+                    zip(src_rgba_paths, src_depth_paths, src_mesh_depth_paths, src_pos_encoding_paths):
                 src_rgb, src_alpha = self.read_rgba(src_rgba_path)
                 src_depth, src_depth_std = self.read_depth(src_mesh_depth_path) # , transmvsnet_path=src_depth_path)
+                src_pos_encoding = self.read_pos_encoding(src_pos_encoding_path)
                 src_rgbs.append(src_rgb), src_alphas.append(src_alpha), src_depths.append(src_depth)
                 src_depth_stds.append(src_depth_std)
+                src_pos_encodings.append(src_pos_encoding)
 
             src_rgbs = torch.stack(src_rgbs)
             src_depths = torch.stack(src_depths)
             src_depth_stds = torch.stack(src_depth_stds)
             src_depth_stds = self.conf2std(src_depth_stds)
             src_alphas = torch.stack(src_alphas)
+            src_pos_encodings = torch.stack(src_pos_encodings)
+            
+            print('src mesh', src_mesh_depth_paths, flush=True)
+            print('src pos', src_pos_encoding_paths, flush=True)
+            print('target mesh', target_mesh_depth_path, flush=True)
+            print('target pos', target_pos_encoding_path, flush=True)
+            
+            print('max min', target_pos_encoding.shape, target_pos_encoding.min(), target_pos_encoding.max(), flush=True)
+            
+            raise ValueError()
 
             with open(ref_cam_path, "r") as f:
                 ref_cam_dict = json.load(f)
@@ -271,15 +306,14 @@ class FacescapeDataSet(torch.utils.data.Dataset):
             src_extrinsics = to_homogeneous_trafo(src_extrinsics)
 
             sample = dict(target_rgb=target_rgb,
-                          # target_depth=target_depth,
-                          # target_depth_std=target_depth_std,
                           target_alpha=target_alpha,
                           target_extrinsics=target_extrinsics,
                           target_intrinsics=target_intrinsics,
                           target_vertices=target_vertices,
+                          target_pos_encoding=target_pos_encoding,
                           target_view_id=torch.tensor(int(target_id)),
                           scan_idx=0,
-                          sample_name=f"{subject}-{ref_frame}-{target_frame}-{target_id}-{'-'.join(source_ids)}-",
+                          sample_name=f"{subject}-{ref_frame}-{target_frame}-{target_id}-{'-'.join(source_ids)}",
                           ref_frame=ref_frame,
                           target_frame=target_frame,
                           src_rgbs=src_rgbs,
@@ -289,11 +323,13 @@ class FacescapeDataSet(torch.utils.data.Dataset):
                           src_extrinsics=src_extrinsics,
                           src_intrinsics=src_intrinsics,
                           src_vertices=ref_vertices,
+                          src_pos_encodings=src_pos_encodings,
                           src_view_ids=torch.tensor([int(src_id) for src_id in source_ids]),
                           offset_target_to_source=offset_target_to_source,
-                          gen_extrinsics = self.gen_extrinsics,
-                          gen_intrinsics = self.gen_intrinsics,
-                          offset_target_to_gen = self.gen_vertices - target_vertices)
+                          gen_extrinsics=self.gen_extrinsics,
+                          gen_intrinsics=self.gen_intrinsics,
+                          gen_pos_encoding=self.gen_pos_encoding,
+                          offset_target_to_gen=self.gen_vertices - target_vertices)
 
             sample = dict_2_torchdict(sample)
 

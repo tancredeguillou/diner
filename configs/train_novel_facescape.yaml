@@ -1,7 +1,7 @@
 logger:
   kwargs:
     save_dir: "outputs/facescape"
-    version: "gen_noc"
+    version: "gen_pe_noc"
 
 data:
   train:
@@ -79,7 +79,7 @@ optimizer_diner:
     lr: 1e-4
 
 trainer:
-  ckpt_path: /cluster/home/tguillou/diner/outputs/facescape/gen_noc/epoch=2-step=49999.ckpt
+  # ckpt_path: /cluster/home/tguillou/diner/outputs/facescape/gen_noc/epoch=2-step=49999.ckpt
   kwargs:
     enable_checkpointing: True
     accelerator: gpu # delete if gpus
